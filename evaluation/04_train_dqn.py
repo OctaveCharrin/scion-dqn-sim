@@ -16,9 +16,7 @@ from tqdm import tqdm
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
-from src.rl.environment_selective_probing import SelectiveProbingSCIONEnv
-from src.rl.state_extractor_enhanced import EnhancedStateExtractor
-from src.rl.reward_calculator_probing import RewardCalculatorWithProbing
+from src.simulation.evaluation_env import EvaluationPathSelectionEnv
 
 # Get run directory
 if len(sys.argv) > 1:
@@ -56,35 +54,36 @@ print(f"Number of paths: {num_paths}")
 training_flows = [f for f in traffic_flows if f['day'] < 14]
 print(f"Training samples: {len(training_flows)}")
 
-# Create environment with selective probing
-env = SelectiveProbingSCIONEnv(
-    topology=topology_data,
+# Create environment with selective probing (evaluation pipeline adapter)
+env = EvaluationPathSelectionEnv(
+    topology_data=topology_data,
     path_store=path_store,
     link_states=link_states,
     latency_probe_cost_ms=10.0,
     bandwidth_probe_cost_ms=100.0,
-    probe_type='adaptive'
+    probe_type="adaptive",
 )
 
-# Configure DQN following simple_dqn.tex parameters
+# Configure DQN (matches ``EnhancedDQNAgent`` / ``EnhancedDQNConfig``)
+state_dim = 5
+epsilon_decay = 0.995
 config = EnhancedDQNConfig(
-    state_dim=5,  # As specified in the tex file
-    action_dim=num_paths,
-    hidden_sizes=[128, 64],  # Neural network architecture
     learning_rate=1e-3,
-    gamma=0.95,  # Discount factor
+    gamma=0.95,
     epsilon_start=1.0,
     epsilon_end=0.01,
-    epsilon_decay=0.995,
-    buffer_capacity=10000,
+    buffer_size=10000,
+    min_buffer_size=500,
     batch_size=32,
-    target_update_freq=100,  # N in the algorithm
-    min_replay_size=1000,
-    device='cuda' if torch.cuda.is_available() else 'cpu'
+    target_update_every=100,
+    hidden_dim=128,
+    n_hidden_layers=2,
+    use_batch_norm=False,
+    use_prioritized_replay=False,
+    tau=0.05,
 )
 
-# Create agent
-agent = EnhancedDQNAgent(config)
+agent = EnhancedDQNAgent(state_dim, num_paths, config)
 
 # Training parameters from simple_dqn.tex
 w1 = 0.7  # Weight for goodput
@@ -93,10 +92,10 @@ w3 = 0.5  # Weight for packet loss in trust calculation
 w4 = 0.5  # Weight for delay in trust calculation
 
 print(f"\nDQN Configuration:")
-print(f"  State dimensions: {config.state_dim}")
-print(f"  Action space: {config.action_dim} paths")
+print(f"  State dimensions: {state_dim}")
+print(f"  Action space: {num_paths} paths")
 print(f"  Reward weights: w1={w1}, w2={w2}, w3={w3}, w4={w4}")
-print(f"  Device: {config.device}")
+print(f"  Device: {agent.device}")
 
 # Training loop
 print("\nTraining DQN agent...")
@@ -137,7 +136,7 @@ for episode in tqdm(range(len(training_flows)), desc="Training episodes"):
     state = np.array(state_features, dtype=np.float32)
     
     # Select action using epsilon-greedy
-    action = agent.select_action(state)
+    action = agent.act(state)
     
     # Take action in environment
     next_state, reward, done, info = env.step(action)
@@ -160,8 +159,8 @@ for episode in tqdm(range(len(training_flows)), desc="Training episodes"):
     agent.remember(state, action, reward, next_state, done)
     
     # Train agent
-    if len(agent.replay_buffer) >= config.min_replay_size:
-        loss = agent.train_step()
+    if len(agent.memory) >= config.min_buffer_size:
+        loss = agent.replay()
         if loss is not None:
             losses.append(loss)
     
@@ -170,18 +169,25 @@ for episode in tqdm(range(len(training_flows)), desc="Training episodes"):
     episode_probes.append(info.get('probe_count', 0))
     
     # Update epsilon
-    agent.epsilon = max(config.epsilon_end, 
-                       agent.epsilon * config.epsilon_decay)
+    agent.epsilon = max(config.epsilon_end, agent.epsilon * epsilon_decay)
 
 # Save trained model
 model_file = os.path.join(run_dir, "dqn_model.pth")
-torch.save({
-    'model_state_dict': agent.q_network.state_dict(),
-    'optimizer_state_dict': agent.optimizer.state_dict(),
-    'config': config,
-    'episode': len(training_flows),
-    'epsilon': agent.epsilon
-}, model_file)
+torch.save(
+    {
+        "q_network": agent.q_network.state_dict(),
+        "target_network": agent.target_network.state_dict(),
+        "optimizer": agent.optimizer.state_dict(),
+        "scheduler": agent.scheduler.state_dict(),
+        "epsilon": agent.epsilon,
+        "steps": agent.steps,
+        "episodes": agent.episodes,
+        "state_dim": state_dim,
+        "action_dim": num_paths,
+        "config": config,
+    },
+    model_file,
+)
 
 print(f"\nModel saved to: {model_file}")
 

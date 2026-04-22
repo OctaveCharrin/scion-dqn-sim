@@ -17,15 +17,13 @@ import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
-from src.rl.environment_selective_probing import SelectiveProbingSCIONEnv
-from src.baselines.baseline_algorithms import (
-    ShortestPathSelector,
-    WidestPathSelector, 
-    LowestLatencySelector,
-    ECMPSelector,
-    RandomSelector,
-    SCIONDefaultSelector
-)
+from src.simulation.evaluation_env import EvaluationPathSelectionEnv
+from src.baselines.shortest_path import ShortestPathSelector
+from src.baselines.widest_path import WidestPathSelector
+from src.baselines.lowest_latency import LowestLatencySelector
+from src.baselines.ecmp import ECMPSelector
+from src.baselines.random_selection import RandomSelector
+from src.baselines.scion_default import SCIONDefaultSelector
 
 # Get run directory
 if len(sys.argv) > 1:
@@ -53,7 +51,11 @@ with open(os.path.join(run_dir, "link_states.pkl"), 'rb') as f:
     link_states = pickle.load(f)
 
 # Load trained DQN model
-model_checkpoint = torch.load(os.path.join(run_dir, "dqn_model.pth"))
+_model_path = os.path.join(run_dir, "dqn_model.pth")
+try:
+    model_checkpoint = torch.load(_model_path, map_location="cpu", weights_only=False)
+except TypeError:
+    model_checkpoint = torch.load(_model_path, map_location="cpu")
 
 src_as = selected_pair['source_as']
 dst_as = selected_pair['destination_as']
@@ -64,18 +66,33 @@ eval_flows = [f for f in traffic_flows if f['day'] >= 14]
 print(f"\nEvaluation samples: {len(eval_flows)}")
 
 # Create environment
-env = SelectiveProbingSCIONEnv(
-    topology=topology_data,
+env = EvaluationPathSelectionEnv(
+    topology_data=topology_data,
     path_store=path_store,
     link_states=link_states,
     latency_probe_cost_ms=10.0,
-    bandwidth_probe_cost_ms=100.0
+    bandwidth_probe_cost_ms=100.0,
 )
 
-# Initialize DQN agent
-config = model_checkpoint['config']
-dqn_agent = EnhancedDQNAgent(config)
-dqn_agent.q_network.load_state_dict(model_checkpoint['model_state_dict'])
+# Initialize DQN agent (checkpoint from ``04_train_dqn.py``)
+_config = model_checkpoint["config"]
+_state_dim = int(model_checkpoint.get("state_dim", 5))
+_action_dim = int(model_checkpoint.get("action_dim", num_paths))
+dqn_agent = EnhancedDQNAgent(_state_dim, _action_dim, _config)
+_q = model_checkpoint.get("q_network") or model_checkpoint.get("model_state_dict")
+dqn_agent.q_network.load_state_dict(_q)
+if "target_network" in model_checkpoint:
+    dqn_agent.target_network.load_state_dict(model_checkpoint["target_network"])
+if "optimizer" in model_checkpoint:
+    try:
+        dqn_agent.optimizer.load_state_dict(model_checkpoint["optimizer"])
+    except Exception:
+        pass
+if "scheduler" in model_checkpoint:
+    try:
+        dqn_agent.scheduler.load_state_dict(model_checkpoint["scheduler"])
+    except Exception:
+        pass
 dqn_agent.epsilon = 0.0  # No exploration during evaluation
 
 # Initialize baseline methods
@@ -103,6 +120,9 @@ results = defaultdict(lambda: {
 # Reward weights from training
 w1, w2, w3, w4 = 0.7, 0.3, 0.5, 0.5
 
+probe_reduction = 0.0
+time_reduction = 0.0
+
 print("\nEvaluating methods...")
 
 # Evaluate each method
@@ -121,6 +141,7 @@ for method_name, method in list(baseline_methods.items()) + [('dqn', dqn_agent)]
         
         # Time the selection
         start_time = time.time()
+        path_metrics = {}
         
         if method_name == 'dqn':
             # DQN with selective probing
@@ -135,13 +156,14 @@ for method_name, method in list(baseline_methods.items()) + [('dqn', dqn_agent)]
             state = np.array(state_features, dtype=np.float32)
             
             # Select action
-            action = dqn_agent.select_action(state)
+            action = dqn_agent.act(state)
             
             # DQN only probes the selected path
             if action < len(paths):
                 path_metrics = env.probe_path_full(action)
                 method_results['bandwidth_probes'] += 1
-                method_results['total_probe_time_ms'] += 100 + 20 * paths[action]['static_metrics']['hop_count']
+                _sm = getattr(paths[action], "static_metrics", {}) or {}
+                method_results['total_probe_time_ms'] += 100 + 20 * int(_sm.get("hop_count", 1))
             
         else:
             # Baseline methods must probe ALL paths
@@ -151,30 +173,34 @@ for method_name, method in list(baseline_methods.items()) + [('dqn', dqn_agent)]
                 # Always probe latency
                 latency_metrics = env.probe_path_latency(path_idx)
                 method_results['latency_probes'] += 1
-                method_results['total_probe_time_ms'] += 10 + 0.5 * paths[path_idx]['static_metrics']['hop_count']
+                _sm = getattr(paths[path_idx], "static_metrics", {}) or {}
+                method_results['total_probe_time_ms'] += 10 + 0.5 * int(_sm.get("hop_count", 1))
                 
                 # Methods that need bandwidth also probe it
                 if method_name in ['widest_path', 'ecmp']:
                     bw_metrics = env.probe_path_full(path_idx)
                     method_results['bandwidth_probes'] += 1
-                    method_results['total_probe_time_ms'] += 100 + 20 * paths[path_idx]['static_metrics']['hop_count']
+                    _sm2 = getattr(paths[path_idx], "static_metrics", {}) or {}
+                    method_results['total_probe_time_ms'] += 100 + 20 * int(_sm2.get("hop_count", 1))
                     path_metrics_list.append(bw_metrics)
                 else:
                     path_metrics_list.append(latency_metrics)
             
+            flow_stub = {'src': src_as, 'dst': dst_as}
+            state_stub = np.zeros(1, dtype=np.float32)
             # Select path based on method
             if method_name == 'shortest_path':
-                action = method.select(paths, path_metrics_list)
+                action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
             elif method_name == 'widest_path':
-                action = method.select(paths, path_metrics_list)
+                action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
             elif method_name == 'lowest_latency':
-                action = method.select(paths, path_metrics_list)
+                action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
             elif method_name == 'ecmp':
-                action = method.select(paths, path_metrics_list)
+                action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
             elif method_name == 'random':
                 action = np.random.choice(len(paths))
             else:  # scion_default
-                action = method.select(paths, path_metrics_list)
+                action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
             
             if action < len(paths):
                 path_metrics = path_metrics_list[action]
@@ -186,7 +212,9 @@ for method_name, method in list(baseline_methods.items()) + [('dqn', dqn_agent)]
         if action < len(paths) and 'path_metrics' in locals():
             # Get metrics for selected path
             latency = path_metrics.get('latency_ms', 50)
-            bandwidth = path_metrics.get('bandwidth_mbps', 10)
+            bandwidth = path_metrics.get('bandwidth_mbps')
+            if bandwidth is None:
+                bandwidth = 0.0
             loss_rate = path_metrics.get('loss_rate', 0.0)
             
             # Calculate reward as per simple_dqn.tex
@@ -244,14 +272,16 @@ for method_name, method_results in results.items():
     print(f"  Avg selection time: {summary[method_name]['avg_selection_time_ms']:.1f} ms")
 
 # Calculate probe reduction for DQN
-if 'dqn' in summary:
+if 'dqn' in summary and len(eval_flows) > 0:
     baseline_avg_probes = np.mean([s['total_probes'] for k, s in summary.items() if k != 'dqn'])
     dqn_probes = summary['dqn']['total_probes']
-    probe_reduction = (baseline_avg_probes - dqn_probes) / baseline_avg_probes * 100
+    if baseline_avg_probes:
+        probe_reduction = (baseline_avg_probes - dqn_probes) / baseline_avg_probes * 100
     
     baseline_avg_time = np.mean([s['total_probe_time_ms'] for k, s in summary.items() if k != 'dqn'])
     dqn_time = summary['dqn']['total_probe_time_ms']
-    time_reduction = (baseline_avg_time - dqn_time) / baseline_avg_time * 100
+    if baseline_avg_time:
+        time_reduction = (baseline_avg_time - dqn_time) / baseline_avg_time * 100
     
     print(f"\n{'='*60}")
     print("DQN PROBE REDUCTION:")

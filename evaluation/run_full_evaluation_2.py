@@ -7,6 +7,7 @@ import os
 import sys
 import subprocess
 import time
+from datetime import datetime
 
 def run_script(script_name, run_dir=None):
     """Run a script and check for errors"""
@@ -14,7 +15,7 @@ def run_script(script_name, run_dir=None):
     print(f"Running {script_name}...")
     print('='*60)
     
-    cmd = ['python', script_name]
+    cmd = [sys.executable, script_name]
     if run_dir:
         cmd.append(run_dir)
     
@@ -42,7 +43,7 @@ output = run_script('01_setup_dense_topology.py', run_dir)
 run_script('02_run_beaconing.py', run_dir)
 
 # Step 3: Simulate traffic
-run_script('02_simulate_traffic.py', run_dir)
+run_script('03_simulate_traffic.py', run_dir)
 
 # Step 4: Train DQN
 run_script('04_train_dqn.py', run_dir)

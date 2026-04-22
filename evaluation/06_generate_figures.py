@@ -67,7 +67,9 @@ method_colors = {
 }
 
 # Figure 1: Probe Overhead and Selection Time (Bar Graph)
-fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(FULL_WIDTH, 3))
+# Use constrained_layout so rotated tick labels and annotations share space
+# predictably (tight_layout often fails with long rotated x labels).
+fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(FULL_WIDTH, 3.2), layout="constrained")
 
 # Sort methods by probe overhead
 methods = list(summary.keys())
@@ -85,10 +87,17 @@ ax1.set_ylabel('Probe Overhead (ms)')
 ax1.set_title('(a) Average Probe Overhead per Selection')
 ax1.grid(axis='y', alpha=0.3)
 
-# Add value labels on bars
-for i, (bar, val) in enumerate(zip(bars1, probe_times)):
-    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2,
-             f'{val:.0f}', ha='center', va='bottom', fontsize=8)
+# Add value labels on bars (offset in points, not data coords — probe ms is large)
+for bar, val in zip(bars1, probe_times):
+    ax1.annotate(
+        f"{val:.0f}",
+        xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
+        xytext=(0, 3),
+        textcoords="offset points",
+        ha="center",
+        va="bottom",
+        fontsize=8,
+    )
 
 # Subplot 2: Selection time
 selection_times = [summary[m]['avg_selection_time_ms'] for m in methods]
@@ -99,14 +108,21 @@ ax2.set_ylabel('Selection Time (ms)')
 ax2.set_title('(b) Average Path Selection Time')
 ax2.grid(axis='y', alpha=0.3)
 
-# Add value labels
-for i, (bar, val) in enumerate(zip(bars2, selection_times)):
-    ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-             f'{val:.1f}', ha='center', va='bottom', fontsize=8)
+# Selection times are ~1e-2 ms; never add a large data offset (e.g. +0.5) or
+# bbox_inches='tight' expands the figure to include labels far above the axes.
+for bar, val in zip(bars2, selection_times):
+    ax2.annotate(
+        f"{val:.1f}",
+        xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
+        xytext=(0, 3),
+        textcoords="offset points",
+        ha="center",
+        va="bottom",
+        fontsize=8,
+    )
 
-plt.tight_layout()
-fig1.savefig(os.path.join(run_dir, 'figure1_probe_overhead.pdf'), dpi=300, bbox_inches='tight')
-fig1.savefig(os.path.join(run_dir, 'figure1_probe_overhead.png'), dpi=300, bbox_inches='tight')
+fig1.savefig(os.path.join(run_dir, "figure1_probe_overhead.pdf"), dpi=300, bbox_inches="tight")
+fig1.savefig(os.path.join(run_dir, "figure1_probe_overhead.png"), dpi=300, bbox_inches="tight")
 
 # Figure 2: Path Reward (Box Plot)
 fig2, ax = plt.subplots(1, 1, figsize=(COLUMN_WIDTH, 3))

@@ -15,10 +15,6 @@ from tqdm import tqdm
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.simulation.traffic.scion_traffic_generator import SCIONTrafficGenerator
-from src.simulation.traffic.traffic_matrix import GravityTrafficMatrix
-from src.simulation.link_state import LinkStateManager
-
 # Get run directory
 if len(sys.argv) > 1:
     run_dir = sys.argv[1]
@@ -43,9 +39,6 @@ dst_as = selected_pair['destination_as']
 
 print(f"\nSimulating traffic for AS {src_as} -> AS {dst_as}")
 print(f"Number of available paths: {selected_pair['num_paths']}")
-
-# Initialize link state manager
-link_state_mgr = LinkStateManager()
 
 # Generate traffic for 28 days
 print("\nGenerating 28 days of traffic...")

@@ -8,7 +8,6 @@ import sys
 import json
 import pickle
 import subprocess
-import tempfile
 import numpy as np
 import networkx as nx
 from datetime import datetime
@@ -21,24 +20,48 @@ from src.topology.brite_cfg_gen import BRITEConfigGenerator
 from src.topology.brite2scion_converter import BRITE2SCIONConverter
 # from src.visualization.topology_visualizer import plot_scion_topology
 
-def run_brite(config_path: str, output_path: str) -> str:
-    """Run BRITE to generate topology"""
-    # Find BRITE path
-    brite_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                              "external", "brite")
+def run_brite(config_path: str, output_stem: str) -> str:
+    """
+    Run BRITE (Main.Brite). ``output_stem`` must be a path *without* the ``.brite`` suffix;
+    BRITE writes ``<output_stem>.brite``. Returns the path to that file.
+    """
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    brite_path = os.path.join(repo_root, "external", "brite")
     jar_path = os.path.join(brite_path, "Java", "Brite.jar")
-    
+    seed_path = os.path.join(brite_path, "Java", "seed_file")
+
     if not os.path.exists(jar_path):
         raise RuntimeError(f"BRITE jar not found at {jar_path}. Run ./setup_brite.sh")
-    
-    # Run BRITE
-    cmd = ["java", "-jar", jar_path, config_path, output_path]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"BRITE generation failed: {result.stderr}")
-    
-    return output_path
+    if not os.path.exists(seed_path):
+        raise RuntimeError(f"BRITE seed file missing at {seed_path}")
+
+    config_path = str(Path(config_path).resolve())
+    output_stem = str(Path(output_stem).resolve())
+
+    cmd = [
+        "java",
+        "-jar",
+        jar_path,
+        config_path,
+        output_stem,
+        seed_path,
+    ]
+    result = subprocess.run(
+        cmd,
+        cwd=brite_path,
+        capture_output=True,
+        text=True,
+    )
+    combined = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0 or "[ERROR]" in combined:
+        raise RuntimeError(
+            f"BRITE generation failed (exit {result.returncode}):\n{combined}"
+        )
+
+    brite_out = output_stem + ".brite"
+    if not os.path.isfile(brite_out):
+        raise RuntimeError(f"BRITE did not create expected file: {brite_out}\n{combined}")
+    return brite_out
 
 if len(sys.argv) > 1:
     run_dir = sys.argv[1]
@@ -53,17 +76,21 @@ print(f"Creating dense SCION topology in {run_dir}")
 print("\n1. Generating BRITE configuration...")
 brite_gen = BRITEConfigGenerator()
 
-# Configure for dense topology
+# Configure for dense topology (numeric keys match BRITE ModelConstants / parser)
+# Set EVAL_BRITE_N_NODES for a faster smoke test (e.g. 45); default is large-scale.
+_eval_n = os.environ.get("EVAL_BRITE_N_NODES", "").strip()
+_default_nodes = int(_eval_n) if _eval_n.isdigit() else 1000
 config_params = {
-    'num_as': 1000,
-    'model': 'BA-2',  # Barabasi-Albert for scale-free
-    'plane_size': 1000,
-    'min_bw': 1000,
-    'max_bw': 10000,
-    'm': 4,  # Higher m for more edges
-    'alpha': 0.15,
-    'beta': 0.2,
-    'gamma': 0.65
+    "n_nodes": _default_nodes,
+    "model_name": 10,
+    "hs": 1000,
+    "ls": 100,
+    "m": 4,
+    "bw_dist": 1,
+    "bw_min": 1000.0,
+    "bw_max": 10000.0,
+    "p": 0.15,
+    "q": 0.2,
 }
 
 config_file = os.path.join(run_dir, "brite_config.conf")
@@ -72,8 +99,8 @@ print(f"BRITE config saved to: {config_file}")
 
 # Step 2: Run BRITE to generate topology
 print("\n2. Running BRITE...")
-brite_output = os.path.join(run_dir, "topology.brite")
-run_brite(config_file, brite_output)
+brite_stem = os.path.join(run_dir, "topology")
+brite_output = run_brite(config_file, brite_stem)
 print(f"BRITE topology saved to: {brite_output}")
 
 # Step 3: Convert to SCION topology
@@ -88,12 +115,15 @@ np.random.seed(42)
 
 # Step 4: Enhance connectivity with additional peering links
 print("\n4. Adding peering links for dense connectivity...")
-num_peering_to_add = 75  # More peering for dense topology
+num_peering_to_add = min(75, max(2, len(nodes) * len(nodes) // 4))
 added = 0
 interface_id = 1000  # Start peering interfaces at 1000
 
 for _ in range(2000):  # Try many times
-    src, dst = np.random.choice(nodes, 2, replace=False)
+    # Use Python int endpoints: numpy types + json.dump(..., default=str) would
+    # stringify node ids on edges, and node_link_graph would treat "2" and 2 as
+    # different ASes (inflated AS count after reload).
+    src, dst = map(int, np.random.choice(nodes, 2, replace=False))
     
     # Skip if already connected
     if G.has_edge(src, dst) or G.has_edge(dst, src):

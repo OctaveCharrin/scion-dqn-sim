@@ -7,6 +7,7 @@ import os
 import sys
 import subprocess
 import time
+from datetime import datetime
 
 def run_script(script_name, run_dir=None):
     """Run a script and check for errors"""
@@ -14,7 +15,7 @@ def run_script(script_name, run_dir=None):
     print(f"Running {script_name}...")
     print('='*60)
     
-    cmd = ['python', script_name]
+    cmd = [sys.executable, script_name]
     if run_dir:
         cmd.append(run_dir)
     
