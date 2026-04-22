@@ -19,7 +19,7 @@ Note: This is a work in progress and some components are not yet fully implement
 1. Clone the repository with submodules:
 ```bash
 git clone --recursive https://github.com/netsys-lab/scion-dqn-sim.git
-cd snetsim
+cd my-scion-dqn-sim
 ```
 
 Or if you already cloned without submodules:
@@ -32,21 +32,15 @@ git submodule update --init --recursive
 ./setup_brite.sh
 ```
 
-3. Create a virtual environment:
+3. Install Python tooling with [uv](https://docs.astral.sh/uv/) and sync dependencies (creates `.venv` and installs the package in editable mode):
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+curl -LsSf https://astral.sh/uv/install.sh | sh   # or use your OS package manager
+uv sync --extra dev
 ```
 
-4. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+Use `uv run python ...` or `source .venv/bin/activate` so scripts use the project environment.
 
-5. Install in development mode:
-```bash
-pip install -e .
-```
+The legacy `requirements.txt` is kept in sync with `pyproject.toml` for reference; prefer `uv sync` for installs.
 
 ## Quick Start
 
@@ -58,14 +52,14 @@ The evaluation pipeline compares DQN-based path selection with baseline methods 
 
 ```bash
 cd evaluation
-python run_full_evaluation.py
+uv run python run_full_evaluation.py
 ```
 
 or
 
 ```bash
 cd evaluation
-python run_full_evaluation_2.py
+uv run python run_full_evaluation_2.py
 ```
 
 This will execute the complete 6-step pipeline:
@@ -103,22 +97,22 @@ cd evaluation
 mkdir -p run_YYYYMMDD_HHMMSS
 
 # Step 1: Generate topology
-python 01_generate_topology.py run_YYYYMMDD_HHMMSS
+uv run python 01_generate_topology.py run_YYYYMMDD_HHMMSS
 
 # Step 2: Run beaconing
-python 02_run_beaconing.py run_YYYYMMDD_HHMMSS
+uv run python 02_run_beaconing.py run_YYYYMMDD_HHMMSS
 
 # Step 3: Simulate traffic
-python 03_simulate_traffic.py run_YYYYMMDD_HHMMSS
+uv run python 03_simulate_traffic.py run_YYYYMMDD_HHMMSS
 
 # Step 4: Train DQN
-python 04_train_dqn.py run_YYYYMMDD_HHMMSS
+uv run python 04_train_dqn.py run_YYYYMMDD_HHMMSS
 
 # Step 5: Evaluate methods
-python 05_evaluate_methods.py run_YYYYMMDD_HHMMSS
+uv run python 05_evaluate_methods.py run_YYYYMMDD_HHMMSS
 
 # Step 6: Generate figures
-python 06_generate_figures.py run_YYYYMMDD_HHMMSS
+uv run python 06_generate_figures.py run_YYYYMMDD_HHMMSS
 ```
 
 ### Evaluation Metrics
