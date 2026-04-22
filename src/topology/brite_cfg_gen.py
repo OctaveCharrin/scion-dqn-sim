@@ -52,8 +52,10 @@ class BRITEConfigGenerator:
         """
         config = self.config.copy()
         config.update(kwargs)
-        if "num_as" in config:
-            config.setdefault("n_nodes", config["num_as"])
+        # Legacy alias: callers that pass ``num_as`` mean the same thing as
+        # ``n_nodes`` unless they also passed ``n_nodes`` explicitly.
+        if "num_as" in kwargs and "n_nodes" not in kwargs:
+            config["n_nodes"] = kwargs["num_as"]
 
         conf_content = self._format_brite_config(config)
         output_path = Path(output_path)
@@ -112,6 +114,60 @@ class BRITEConfigGenerator:
         return "\n".join(lines)
 
 
+def run_brite(config_path: Path, output_stem: Path,
+              brite_path: Optional[Path] = None) -> Path:
+    """Invoke the BRITE Java generator and return the produced ``.brite`` file.
+
+    ``output_stem`` must NOT include the ``.brite`` suffix — BRITE adds it.
+
+    Parameters
+    ----------
+    config_path: path to a BRITE ``.conf`` file (e.g. produced by
+        :class:`BRITEConfigGenerator`).
+    output_stem: target file *stem* (no extension) where BRITE will write
+        ``<stem>.brite``.
+    brite_path: root of the BRITE distribution (default: ``external/brite``
+        relative to the repo).
+    """
+    brite_path = Path(brite_path) if brite_path else Path("external/brite")
+    jar = brite_path / "Java" / "Brite.jar"
+    seed = brite_path / "Java" / "seed_file"
+    if not jar.is_file():
+        raise FileNotFoundError(
+            f"BRITE jar missing: {jar} (run ./setup_brite.sh)"
+        )
+    if not seed.is_file():
+        raise FileNotFoundError(f"BRITE seed file missing: {seed}")
+
+    config_abs = Path(config_path).resolve()
+    stem_abs = Path(output_stem).resolve()
+
+    cmd = [
+        "java",
+        "-jar",
+        str(jar.resolve()),
+        str(config_abs),
+        str(stem_abs),
+        str(seed.resolve()),
+    ]
+    result = subprocess.run(
+        cmd,
+        cwd=str(brite_path.resolve()),
+        capture_output=True,
+        text=True,
+    )
+    combined = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0 or "[ERROR]" in combined:
+        raise RuntimeError(
+            f"BRITE generation failed (exit {result.returncode}):\n{combined}"
+        )
+
+    out_file = Path(str(stem_abs) + ".brite")
+    if not out_file.is_file():
+        raise RuntimeError(f"BRITE did not create expected file: {out_file}\n{combined}")
+    return out_file
+
+
 try:
     from src.topology.brite_wrapper import BRITEWrapper
 
@@ -152,25 +208,11 @@ except ImportError:
         ) -> List[Path]:
             output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
-            jar = self.brite_path / "Java" / "Brite.jar"
-            seed = self.brite_path / "Java" / "seed_file"
-            if not jar.is_file():
-                raise FileNotFoundError(f"BRITE jar missing: {jar} (run ./setup_brite.sh)")
-            if not seed.is_file():
-                raise FileNotFoundError(f"BRITE seed file missing: {seed}")
-
-            results: List[Path] = []
-            for cfg in config_files:
-                cfg = Path(cfg).resolve()
-                out_stem = (output_dir / cfg.stem).resolve()
-                cmd = [
-                    "java",
-                    "-jar",
-                    str(jar.resolve()),
-                    str(cfg),
-                    str(out_stem),
-                    str(seed.resolve()),
-                ]
-                subprocess.run(cmd, cwd=str(self.brite_path.resolve()), check=True)
-                results.append(Path(str(out_stem) + ".brite"))
-            return results
+            return [
+                run_brite(
+                    Path(cfg).resolve(),
+                    (output_dir / Path(cfg).stem).resolve(),
+                    brite_path=self.brite_path,
+                )
+                for cfg in config_files
+            ]

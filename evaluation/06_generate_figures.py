@@ -4,67 +4,27 @@ Generate LNCS-style figures for the evaluation results
 """
 
 import os
-import sys
 import json
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib import rcParams
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _common import (
+    COLUMN_WIDTH,
+    FULL_WIDTH,
+    METHOD_COLORS as method_colors,
+    METHOD_DISPLAY_NAMES as method_display_names,
+    apply_lncs_style,
+    resolve_run_dir,
+)
 
-# Get run directory
-if len(sys.argv) > 1:
-    run_dir = sys.argv[1]
-else:
-    dirs = [d for d in os.listdir('.') if d.startswith('run_')]
-    run_dir = sorted(dirs)[-1]
+run_dir = resolve_run_dir()
 
-print(f"Using run directory: {run_dir}")
-
-# Load results
 with open(os.path.join(run_dir, "evaluation_results.json"), 'r') as f:
     results = json.load(f)
 
 summary = results['summary']
 
-# Configure matplotlib for LNCS style
-rcParams['font.family'] = 'serif'
-rcParams['font.serif'] = ['Times New Roman']
-rcParams['font.size'] = 10
-rcParams['axes.labelsize'] = 10
-rcParams['axes.titlesize'] = 11
-rcParams['xtick.labelsize'] = 9
-rcParams['ytick.labelsize'] = 9
-rcParams['legend.fontsize'] = 9
-rcParams['figure.titlesize'] = 12
-
-# LNCS column width is ~3.5 inches, full width is ~7 inches
-COLUMN_WIDTH = 3.5
-FULL_WIDTH = 7.0
-
-# Method names for display
-method_display_names = {
-    'dqn': 'DQN (Ours)',
-    'shortest_path': 'Shortest Path',
-    'widest_path': 'Widest Path',
-    'lowest_latency': 'Lowest Latency',
-    'ecmp': 'ECMP',
-    'random': 'Random',
-    'scion_default': 'SCION Default'
-}
-
-# Colors for methods
-method_colors = {
-    'dqn': '#1f77b4',  # Blue
-    'shortest_path': '#ff7f0e',  # Orange
-    'widest_path': '#2ca02c',  # Green
-    'lowest_latency': '#d62728',  # Red
-    'ecmp': '#9467bd',  # Purple
-    'random': '#8c564b',  # Brown
-    'scion_default': '#e377c2'  # Pink
-}
+apply_lncs_style()
 
 # Figure 1: Probe Overhead and Selection Time (Bar Graph)
 # Use constrained_layout so rotated tick labels and annotations share space

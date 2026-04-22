@@ -4,28 +4,18 @@ Train DQN agent following the approach in simple_dqn.tex
 """
 
 import os
-import sys
 import json
 import pickle
 import numpy as np
 import torch
-from datetime import datetime
 from tqdm import tqdm
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _common import resolve_run_dir
 
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
 from src.simulation.evaluation_env import EvaluationPathSelectionEnv
 
-# Get run directory
-if len(sys.argv) > 1:
-    run_dir = sys.argv[1]
-else:
-    dirs = [d for d in os.listdir('.') if d.startswith('run_')]
-    run_dir = sorted(dirs)[-1]
-
-print(f"Using run directory: {run_dir}")
+run_dir = resolve_run_dir()
 
 # Load data
 with open(os.path.join(run_dir, "scion_topology.json"), 'r') as f:

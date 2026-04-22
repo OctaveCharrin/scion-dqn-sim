@@ -4,17 +4,16 @@ Evaluate all path selection methods on the last 14 days
 """
 
 import os
-import sys
 import json
 import pickle
+import time
+from collections import defaultdict
+
 import numpy as np
 import torch
-from collections import defaultdict
 from tqdm import tqdm
-import time
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _common import resolve_run_dir
 
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
 from src.simulation.evaluation_env import EvaluationPathSelectionEnv
@@ -25,14 +24,7 @@ from src.baselines.ecmp import ECMPSelector
 from src.baselines.random_selection import RandomSelector
 from src.baselines.scion_default import SCIONDefaultSelector
 
-# Get run directory
-if len(sys.argv) > 1:
-    run_dir = sys.argv[1]
-else:
-    dirs = [d for d in os.listdir('.') if d.startswith('run_')]
-    run_dir = sorted(dirs)[-1]
-
-print(f"Using run directory: {run_dir}")
+run_dir = resolve_run_dir()
 
 # Load all necessary data
 with open(os.path.join(run_dir, "scion_topology.json"), 'r') as f:
@@ -188,20 +180,13 @@ for method_name, method in list(baseline_methods.items()) + [('dqn', dqn_agent)]
             
             flow_stub = {'src': src_as, 'dst': dst_as}
             state_stub = np.zeros(1, dtype=np.float32)
-            # Select path based on method
-            if method_name == 'shortest_path':
+            # All selector classes share the same ``select_path`` signature;
+            # ``random`` is a cheap special case that doesn't even need metrics.
+            if method_name == 'random':
+                action = int(np.random.choice(len(paths)))
+            else:
                 action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
-            elif method_name == 'widest_path':
-                action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
-            elif method_name == 'lowest_latency':
-                action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
-            elif method_name == 'ecmp':
-                action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
-            elif method_name == 'random':
-                action = np.random.choice(len(paths))
-            else:  # scion_default
-                action = method.select_path(paths, path_metrics_list, flow_stub, state_stub)
-            
+
             if action < len(paths):
                 path_metrics = path_metrics_list[action]
         

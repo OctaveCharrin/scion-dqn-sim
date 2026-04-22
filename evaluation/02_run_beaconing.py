@@ -3,32 +3,22 @@
 Run SCION beaconing simulation and analyze path diversity
 """
 
-import os
-import sys
 import json
 import pickle
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
 import networkx as nx
-from collections import defaultdict, Counter
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _common import resolve_run_dir
 
 from src.beacon.beacon_sim_v2 import CorrectedBeaconSimulator
 from src.simulation.json_topology_adapter import json_topology_to_beacon_pickle
 from src.simulation.path_store import InMemoryPathStore
 from src.simulation.path_builder import build_paths_for_pair
 
-# Get run directory from command line or use latest
-if len(sys.argv) > 1:
-    run_dir = sys.argv[1]
-else:
-    dirs = [d for d in os.listdir(".") if d.startswith("run_")]
-    run_dir = sorted(dirs)[-1]
-
-print(f"Using run directory: {run_dir}")
+run_dir = resolve_run_dir()
 run_path = Path(run_dir)
 
 # Load topology JSON

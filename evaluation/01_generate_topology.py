@@ -7,70 +7,32 @@ import os
 import sys
 import json
 import pickle
-import subprocess
-import numpy as np
-import networkx as nx
 from datetime import datetime
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import numpy as np
+import networkx as nx
 
-from src.topology.brite_cfg_gen import BRITEConfigGenerator
+from _common import resolve_run_dir
+
+from src.topology.brite_cfg_gen import BRITEConfigGenerator, run_brite
 from src.topology.brite2scion_converter import BRITE2SCIONConverter
-# from src.visualization.topology_visualizer import plot_scion_topology
 
-def run_brite(config_path: str, output_stem: str) -> str:
-    """
-    Run BRITE (Main.Brite). ``output_stem`` must be a path *without* the ``.brite`` suffix;
-    BRITE writes ``<output_stem>.brite``. Returns the path to that file.
-    """
-    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    brite_path = os.path.join(repo_root, "external", "brite")
-    jar_path = os.path.join(brite_path, "Java", "Brite.jar")
-    seed_path = os.path.join(brite_path, "Java", "seed_file")
 
-    if not os.path.exists(jar_path):
-        raise RuntimeError(f"BRITE jar not found at {jar_path}. Run ./setup_brite.sh")
-    if not os.path.exists(seed_path):
-        raise RuntimeError(f"BRITE seed file missing at {seed_path}")
-
-    config_path = str(Path(config_path).resolve())
-    output_stem = str(Path(output_stem).resolve())
-
-    cmd = [
-        "java",
-        "-jar",
-        jar_path,
-        config_path,
-        output_stem,
-        seed_path,
-    ]
-    result = subprocess.run(
-        cmd,
-        cwd=brite_path,
-        capture_output=True,
-        text=True,
-    )
-    combined = (result.stdout or "") + (result.stderr or "")
-    if result.returncode != 0 or "[ERROR]" in combined:
-        raise RuntimeError(
-            f"BRITE generation failed (exit {result.returncode}):\n{combined}"
-        )
-
-    brite_out = output_stem + ".brite"
-    if not os.path.isfile(brite_out):
-        raise RuntimeError(f"BRITE did not create expected file: {brite_out}\n{combined}")
-    return brite_out
-
+# Allow this step to create a new run directory if none is provided.
 if len(sys.argv) > 1:
     run_dir = sys.argv[1]
+    print(f"Using run directory: {run_dir}")
 else:
-    run_dir = f'run_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
+    run_dir = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     os.makedirs(run_dir, exist_ok=True)
     print(f"Using run directory: {run_dir}")
 
 print(f"Creating dense SCION topology in {run_dir}")
+
+# Locate the BRITE distribution relative to the repo root.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BRITE_PATH = REPO_ROOT / "external" / "brite"
 
 # Step 1: Generate dense BRITE topology configuration
 print("\n1. Generating BRITE configuration...")
@@ -100,7 +62,7 @@ print(f"BRITE config saved to: {config_file}")
 # Step 2: Run BRITE to generate topology
 print("\n2. Running BRITE...")
 brite_stem = os.path.join(run_dir, "topology")
-brite_output = run_brite(config_file, brite_stem)
+brite_output = run_brite(Path(config_file), Path(brite_stem), brite_path=BRITE_PATH)
 print(f"BRITE topology saved to: {brite_output}")
 
 # Step 3: Convert to SCION topology
@@ -199,12 +161,5 @@ else:
 # Calculate average degree
 avg_degree = sum(dict(G.degree()).values()) / len(G)
 print(f"   - Average degree: {avg_degree:.2f}")
-
-# Visualize topology
-print("\n6. Generating visualization...")
-# vis_file = os.path.join(run_dir, "topology_visualization.png")
-# plot_scion_topology(scion_topo, output_path=vis_file, title="50-AS Dense SCION Topology")
-# print(f"Visualization saved to: {vis_file}")
-print("Visualization skipped (module not available)")
 
 print(f"\nTopology generation complete! Files saved in {run_dir}/")

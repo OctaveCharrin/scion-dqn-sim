@@ -4,7 +4,6 @@ Simulate 28 days of traffic on the SCION network
 """
 
 import os
-import sys
 import json
 import pickle
 import numpy as np
@@ -12,17 +11,9 @@ import pandas as pd
 from datetime import datetime, timedelta
 from tqdm import tqdm
 
-# Add parent directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from _common import resolve_run_dir
 
-# Get run directory
-if len(sys.argv) > 1:
-    run_dir = sys.argv[1]
-else:
-    dirs = [d for d in os.listdir('.') if d.startswith('run_')]
-    run_dir = sorted(dirs)[-1]
-
-print(f"Using run directory: {run_dir}")
+run_dir = resolve_run_dir()
 
 # Load topology and selected pair
 with open(os.path.join(run_dir, "scion_topology.json"), 'r') as f:
