@@ -5,6 +5,7 @@ This version properly tracks interface IDs during beaconing as required by the
 SCION control plane specification.
 """
 
+import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -39,7 +40,9 @@ class CorrectedBeaconSimulator:
                  core_beacon_interval: float = 60.0,
                  intra_beacon_interval: float = 5.0,
                  max_segment_ttl: int = 24 * 3600,  # 24 hours
-                 max_segments_per_type: int = 50):
+                 max_segments_per_type: int = 50,
+                 max_intra_queue_pops: Optional[int] = None,
+                 max_intra_segments_per_isd: Optional[int] = None):
         """
         Initialize beacon simulator
         
@@ -48,11 +51,27 @@ class CorrectedBeaconSimulator:
             intra_beacon_interval: Seconds between intra-ISD beacons
             max_segment_ttl: Maximum segment lifetime in seconds
             max_segments_per_type: Max segments to keep per (src,dst,type) tuple
+            max_intra_queue_pops: Cap BFS-style intra-ISD propagation work per
+                originating core (avoids exponential blow-ups on dense graphs).
+                Defaults to 80_000 or ``BEACON_INTRA_MAX_POPS`` if set.
+            max_intra_segments_per_isd: Max registered *down* intra segments per ISD
+                (each adds a matching up segment). Defaults to 20_000 or
+                ``BEACON_MAX_INTRA_SEGMENTS_PER_ISD`` if set.
         """
         self.core_beacon_interval = core_beacon_interval
         self.intra_beacon_interval = intra_beacon_interval
         self.max_segment_ttl = max_segment_ttl
         self.max_segments_per_type = max_segments_per_type
+        if max_intra_queue_pops is not None:
+            self.max_intra_queue_pops = int(max_intra_queue_pops)
+        else:
+            env_cap = os.environ.get("BEACON_INTRA_MAX_POPS")
+            self.max_intra_queue_pops = int(env_cap) if env_cap else 80_000
+        if max_intra_segments_per_isd is not None:
+            self.max_intra_segments_per_isd = int(max_intra_segments_per_isd)
+        else:
+            env_ms = os.environ.get("BEACON_MAX_INTRA_SEGMENTS_PER_ISD")
+            self.max_intra_segments_per_isd = int(env_ms) if env_ms else 20_000
         
     def simulate(self, topology_path: Path, output_dir: Path, 
                  simulation_time: float = 300.0) -> Dict:
@@ -68,7 +87,10 @@ class CorrectedBeaconSimulator:
             Segment store and statistics
         """
         print("=== Corrected Beacon Simulation ===\n")
-        
+        self._intra_budget_warned = False
+        self._intra_seg_cap_warned = False
+        self._intra_segment_cap_hit = False
+
         # Load topology
         with open(topology_path, 'rb') as f:
             topology = pickle.load(f)
@@ -85,7 +107,9 @@ class CorrectedBeaconSimulator:
             'up': defaultdict(list),    # by ISD
             'down': defaultdict(list)   # by ISD
         }
-        
+        self._core_segment_keys: set = set()
+        self._intra_down_keys_by_isd: Dict[int, set] = defaultdict(set)
+
         # Run simulation phases
         print("Phase 1: Core Beaconing")
         core_stats = self._simulate_core_beaconing(simulation_time)
@@ -259,14 +283,11 @@ class CorrectedBeaconSimulator:
             'segment_id': pcb.segment_id,
             'timestamp': time.time()
         }
-        
-        # Check if we already have this segment
-        for existing in self.segments['core']:
-            if (existing['src'] == segment['src'] and 
-                existing['dst'] == segment['dst'] and
-                existing['path'] == segment['path']):
-                return  # Duplicate
-                
+        key = (segment['src'], segment['dst'], tuple(segment['path']))
+        if key in self._core_segment_keys:
+            return
+        self._core_segment_keys.add(key)
+
         self.segments['core'].append(segment)
         stats['segments_discovered'] += 1
     
@@ -292,11 +313,14 @@ class CorrectedBeaconSimulator:
                 
             print(f"    Core ASes: {isd_cores}")
             print(f"    Non-core ASes: {len(isd_non_cores)}")
-            
+            self._intra_segment_cap_hit = False
+
             # Each core originates beacons for intra-ISD
             reachable_non_cores = set()
             
             for core_originator in isd_cores:
+                if self._intra_segment_cap_hit:
+                    break
                 # Create initial PCB
                 pcb = PCB(originator=core_originator)
                 pcb.segment_id = f"intra_{isd}_{core_originator}_{int(time.time())}"
@@ -332,8 +356,20 @@ class CorrectedBeaconSimulator:
         queue = deque([(current_as, pcb, 0)])  # Add depth counter
         reached_non_cores = set()
         max_depth = 10  # Maximum propagation depth
-        
+        pops = 0
+
         while queue:
+            if self._intra_segment_cap_hit:
+                break
+            if pops >= self.max_intra_queue_pops:
+                if not self._intra_budget_warned:
+                    self._intra_budget_warned = True
+                    print(
+                        f"    Warning: intra-ISD propagation budget exhausted "
+                        f"({self.max_intra_queue_pops} queue pops); stopping early."
+                    )
+                break
+            pops += 1
             current, current_pcb, depth = queue.popleft()
             
             # Skip if too deep
@@ -463,6 +499,16 @@ class CorrectedBeaconSimulator:
     def _register_intra_segment(self, pcb: PCB, isd: int, 
                                seg_type: str, stats: Dict):
         """Register an intra-ISD segment"""
+        if len(self.segments['down'][isd]) >= self.max_intra_segments_per_isd:
+            self._intra_segment_cap_hit = True
+            if not self._intra_seg_cap_warned:
+                self._intra_seg_cap_warned = True
+                print(
+                    f"    Warning: intra-ISD segment cap reached "
+                    f"({self.max_intra_segments_per_isd} down segments per ISD)."
+                )
+            return
+
         # Create down segment
         down_segment = {
             'type': 'down',
@@ -474,14 +520,11 @@ class CorrectedBeaconSimulator:
             'segment_id': pcb.segment_id + "_down",
             'timestamp': time.time()
         }
-        
-        # Check for duplicates
-        for existing in self.segments['down'][isd]:
-            if (existing['src'] == down_segment['src'] and
-                existing['dst'] == down_segment['dst'] and
-                existing['path'] == down_segment['path']):
-                return
-                
+        dkey = (down_segment['src'], down_segment['dst'], tuple(down_segment['path']))
+        if dkey in self._intra_down_keys_by_isd[isd]:
+            return
+        self._intra_down_keys_by_isd[isd].add(dkey)
+
         self.segments['down'][isd].append(down_segment)
         stats['down_segments'] += 1
         
@@ -505,7 +548,6 @@ class CorrectedBeaconSimulator:
             'segment_id': pcb.segment_id + "_up",
             'timestamp': time.time()
         }
-        
         self.segments['up'][isd].append(up_segment)
         stats['up_segments'] += 1
     
@@ -526,7 +568,7 @@ def run_corrected_simulation(topology_path: Path, output_dir: Path):
     segment_store, stats = simulator.simulate(topology_path, output_dir)
     
     print("\n=== Simulation Complete ===")
-    print(f"\nTotal segments discovered:")
+    print("\nTotal segments discovered:")
     print(f"  Core: {stats['totals']['core_segments']}")
     print(f"  Up: {stats['totals']['up_segments']}")
     print(f"  Down: {stats['totals']['down_segments']}")
