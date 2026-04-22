@@ -1,190 +1,176 @@
 """
 BRITE configuration generator
 
-Generates deterministic BRITE configuration files from YAML templates.
+Emits BRITE 2.x Java configuration files (numeric model codes and BeginOutput flags).
 """
 
-import yaml
+import subprocess
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict, List, Optional
+
+import yaml
+
+# ModelConstants.java (BRITE 2.0)
+RT_WAXMAN = 1
+AS_WAXMAN = 3
+AS_BARABASI = 4
+RT_BARABASI2 = 9
+AS_BARABASI2 = 10
 
 
 class BRITEConfigGenerator:
-    """Generate BRITE configuration files from templates"""
-    
-    DEFAULT_CONFIG = {
-        'topology_type': 'AS',
-        'n_nodes': 100,
-        'geo_bounds': [1000, 1000],
-        'model': 'Barabasi-Albert',
-        'degree_alpha': 2.2,
-        'bw_dist': 'Uniform',
-        'bw_min': 1,
-        'bw_max': 100,
-        'growth_type': 'Incremental',
-        'pref_conn': 'On',
-        'seed': 42
+    """Generate BRITE configuration files from YAML templates or defaults."""
+
+    DEFAULT_CONFIG: Dict[str, Any] = {
+        "model_name": AS_BARABASI,  # AS-level Barabasi-Albert
+        "n_nodes": 100,
+        "hs": 1000,
+        "ls": 100,
+        "node_placement": 1,
+        "m": 2,
+        "bw_dist": 1,
+        "bw_min": 10.0,
+        "bw_max": 100.0,
+        "p": 0.45,
+        "q": 0.2,
     }
-    
-    def __init__(self, template_path: Path = None):
-        """
-        Args:
-            template_path: Path to YAML template file
-        """
+
+    def __init__(self, template_path: Optional[Path] = None):
         self.template_path = template_path
         self.config = self.DEFAULT_CONFIG.copy()
-        
         if template_path and template_path.exists():
             with open(template_path) as f:
-                user_config = yaml.safe_load(f)
-                self.config.update(user_config)
-    
+                user_config = yaml.safe_load(f) or {}
+            self.config.update(user_config)
+
     def generate(self, output_path: Path, **kwargs) -> Path:
         """
-        Generate BRITE configuration file
-        
-        Args:
-            output_path: Where to write the .conf file
-            **kwargs: Override template parameters
-            
-        Returns:
-            Path to generated config file
+        Generate a BRITE .conf file.
+
+        Common kwargs: n_nodes (or legacy alias num_as), model_name, hs, ls, m,
+        bw_min, bw_max, bw_dist, p, q (required for AS Barabasi-Albert 2).
         """
-        # Override with any provided parameters
         config = self.config.copy()
         config.update(kwargs)
-        
-        # Generate BRITE config format
+        if "num_as" in config:
+            config.setdefault("n_nodes", config["num_as"])
+
         conf_content = self._format_brite_config(config)
-        
-        # Write to file
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(output_path, 'w') as f:
+        with open(output_path, "w") as f:
             f.write(conf_content)
-            
         return output_path
-    
+
     def _format_brite_config(self, config: Dict[str, Any]) -> str:
-        """Format configuration as BRITE .conf file"""
-        lines = []
-        
-        # Topology section
-        lines.append(f"BriteConfig")
-        lines.append("")
-        lines.append(f"BeginModel")
-        lines.append(f"\tName = {config['topology_type']}_Topology")
-        lines.append(f"\tn = {config['n_nodes']}")
-        lines.append(f"\tk = -1")  # Not used in BA model
-        lines.append(f"\tLS = {config['geo_bounds'][0]}")
-        lines.append(f"\tHS = {config['geo_bounds'][1]}")
-        lines.append(f"\tNodePlacement = Random")
-        lines.append(f"\tm = 2")  # New links per node
-        lines.append(f"\tGrowthType = {config['growth_type']}")
-        lines.append(f"\tPreferentialConnectivity = {config['pref_conn']}")
-        lines.append(f"\talpha = {config['degree_alpha']}")
-        lines.append(f"\tbeta = 0.2")  # Distance factor
-        lines.append(f"\tgamma = -1")  # Not used
-        lines.append(f"\tBWDist = {config['bw_dist']}")
-        lines.append(f"\tBWMin = {config['bw_min']}")
-        lines.append(f"\tBWMax = {config['bw_max']}")
-        lines.append(f"EndModel")
-        lines.append("")
-        lines.append(f"BeginOutput")
-        lines.append(f"\tOutputType = BRITE")
-        lines.append(f"EndOutput")
-        
-        return '\n'.join(lines)
-    
-    def generate_batch(self, base_path: Path, configurations: list) -> list:
-        """
-        Generate multiple configuration files
-        
-        Args:
-            base_path: Base directory for output
-            configurations: List of configuration dictionaries
-            
-        Returns:
-            List of paths to generated config files
-        """
-        paths = []
-        for i, config in enumerate(configurations):
-            output_path = base_path / f"config_{i}.conf"
-            path = self.generate(output_path, **config)
-            paths.append(path)
-        return paths
+        """BRITE Java parser expects numeric fields (see configs/brite_templates)."""
+        model_name = int(config["model_name"])
+        n = int(config["n_nodes"])
+        hs = int(config["hs"])
+        ls = int(config["ls"])
+        np_ = int(config["node_placement"])
+        m = int(config["m"])
+        bw_dist = int(config["bw_dist"])
+        bw_min = float(config["bw_min"])
+        bw_max = float(config["bw_max"])
+
+        lines = [
+            "BriteConfig",
+            "",
+            "BeginModel",
+            f"\tName = {model_name}",
+            f"\tN = {n}",
+            f"\tHS = {hs}",
+            f"\tLS = {ls}",
+            f"\tNodePlacement = {np_}",
+            f"\tm = {m}",
+            f"\tBWDist = {bw_dist}",
+            f"\tBWMin = {bw_min}",
+            f"\tBWMax = {bw_max}",
+        ]
+        if model_name in (RT_BARABASI2, AS_BARABASI2):
+            lines.append(f"\tp = {float(config['p'])}")
+            lines.append(f"\tq = {float(config['q'])}")
+        if model_name in (RT_WAXMAN, AS_WAXMAN):
+            lines.append(f"\talpha = {float(config.get('alpha', 0.15))}")
+            lines.append(f"\tbeta = {float(config.get('beta', 0.2))}")
+            lines.append(f"\tGrowthType = {int(config.get('growth_type', 1))}")
+        lines.extend(
+            [
+                "EndModel",
+                "",
+                "BeginOutput",
+                "\tBRITE = 1",
+                "\tOTTER = 0",
+                "\tDML = 0",
+                "\tNS = 0",
+                "\tJavasim = 0",
+                "EndOutput",
+                "",
+            ]
+        )
+        return "\n".join(lines)
 
 
-# Reuse the existing BRITEWrapper functionality
 try:
     from src.topology.brite_wrapper import BRITEWrapper
-    
+
     class BRITERunner(BRITEWrapper):
-        """Extended BRITE runner with parallel execution support"""
-        
+        """Extended BRITE runner with parallel execution support."""
+
         def run_parallel(self, config_files: list, output_dir: Path, n_jobs: int = -1):
-            """
-            Run multiple BRITE instances in parallel
-            
-            Args:
-                config_files: List of configuration file paths
-                output_dir: Directory for output files
-                n_jobs: Number of parallel jobs (-1 for all CPUs)
-            """
             from joblib import Parallel, delayed
             import multiprocessing
-            
+
             if n_jobs == -1:
                 n_jobs = multiprocessing.cpu_count()
-            
+
             def run_single(config_path, output_dir):
-                output_name = config_path.stem
+                output_name = Path(config_path).stem
                 return self.generate_topology(
-                    n_nodes=None,  # Read from config
-                    model_type=None,  # Read from config
+                    n_nodes=None,
+                    model_type=None,
                     output_dir=output_dir,
                     output_name=output_name,
-                    config_file=str(config_path)
+                    config_file=str(config_path),
                 )
-            
-            results = Parallel(n_jobs=n_jobs)(
-                delayed(run_single)(cfg, output_dir) 
-                for cfg in config_files
+
+            return Parallel(n_jobs=n_jobs)(
+                delayed(run_single)(cfg, output_dir) for cfg in config_files
             )
-            
-            return results
-            
+
 except ImportError:
-    # Fallback implementation without dependency on src/
-    import subprocess
-    
+
     class BRITERunner:
-        """Minimal BRITE runner implementation"""
-        
-        def __init__(self, brite_path: Path = None):
-            self.brite_path = brite_path or Path("external/brite")
-            
-        def run_parallel(self, config_files: list, output_dir: Path, n_jobs: int = -1):
-            """Run BRITE with GNU Parallel"""
-            import tempfile
-            
+        """Run BRITE via the bundled JAR (Main.Brite requires config, output stem, seed file)."""
+
+        def __init__(self, brite_path: Optional[Path] = None):
+            self.brite_path = Path(brite_path or "external/brite")
+
+        def run_parallel(
+            self, config_files: List[Path], output_dir: Path, n_jobs: int = -1
+        ) -> List[Path]:
+            output_dir = Path(output_dir)
             output_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Create a list of commands
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
-                for cfg in config_files:
-                    cmd = f"cd {self.brite_path} && java -cp Java/:. Main.Brite {cfg} {output_dir}/{cfg.stem}"
-                    f.write(cmd + '\n')
-                cmd_file = f.name
-            
-            # Run with GNU parallel
-            subprocess.run([
-                'parallel', '-j', str(n_jobs), '--progress'
-            ], stdin=open(cmd_file), check=True)
-            
-            # Clean up
-            Path(cmd_file).unlink()
-            
-            # Return output files
-            return list(output_dir.glob("*.brite"))
+            jar = self.brite_path / "Java" / "Brite.jar"
+            seed = self.brite_path / "Java" / "seed_file"
+            if not jar.is_file():
+                raise FileNotFoundError(f"BRITE jar missing: {jar} (run ./setup_brite.sh)")
+            if not seed.is_file():
+                raise FileNotFoundError(f"BRITE seed file missing: {seed}")
+
+            results: List[Path] = []
+            for cfg in config_files:
+                cfg = Path(cfg).resolve()
+                out_stem = (output_dir / cfg.stem).resolve()
+                cmd = [
+                    "java",
+                    "-jar",
+                    str(jar.resolve()),
+                    str(cfg),
+                    str(out_stem),
+                    str(seed.resolve()),
+                ]
+                subprocess.run(cmd, cwd=str(self.brite_path.resolve()), check=True)
+                results.append(Path(str(out_stem) + ".brite"))
+            return results

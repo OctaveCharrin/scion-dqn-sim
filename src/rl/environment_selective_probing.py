@@ -54,17 +54,23 @@ class SelectiveProbingSCIONEnv(RealisticSCIONPathSelectionEnv):
         self.exploration_budget = 2  # Number of extra paths to probe for exploration
         self.path_probe_history = {}  # Track when paths were last probed
         
-    def reset(self, source_as: Optional[int] = None, dest_as: Optional[int] = None):
-        """Reset environment including probe tracking"""
-        state = super().reset()
-        
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Reset environment including probe tracking."""
+        state, info = super().reset(seed=seed, options=options, **kwargs)
+
         # Reset probe counters
         self.num_latency_probes = 0
         self.num_bandwidth_probes = 0
         self.latency_probe_time_ms = 0.0
         self.bandwidth_probe_time_ms = 0.0
-        
-        return state
+
+        return state, info
     
     def probe_path_latency(self, path_index: int) -> Dict:
         """
@@ -272,7 +278,7 @@ class SelectiveProbingSCIONEnv(RealisticSCIONPathSelectionEnv):
             actual_metrics = self.probe_path(action)
         
         # Call parent step
-        next_state, reward, done, info = super().step(action)
+        next_state, reward, terminated, truncated, info = super().step(action)
         
         # Add detailed probing stats to info
         info['probing_stats'] = {
@@ -284,7 +290,7 @@ class SelectiveProbingSCIONEnv(RealisticSCIONPathSelectionEnv):
             'paths_probed': len(exploration_paths)
         }
         
-        return next_state, reward, done, info
+        return next_state, reward, terminated, truncated, info
     
     def get_valid_actions(self) -> List[int]:
         """

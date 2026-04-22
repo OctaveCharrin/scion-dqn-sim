@@ -80,8 +80,15 @@ class PathFinderV2:
         with open(segment_store_path, 'rb') as f:
             self.segments = pickle.load(f)
             
-        # Load link table
-        self.link_table = pd.read_pickle(link_table_path)
+        # Load link table (CLI historically used .parquet extension with pickle bytes)
+        ltp = Path(link_table_path)
+        if ltp.suffix.lower() == ".parquet":
+            try:
+                self.link_table = pd.read_parquet(link_table_path)
+            except Exception:
+                self.link_table = pd.read_pickle(link_table_path)
+        else:
+            self.link_table = pd.read_pickle(link_table_path)
         
         # Build graph for direct path checking
         self._build_graph()

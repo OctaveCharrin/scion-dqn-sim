@@ -37,15 +37,23 @@ class RealisticSCIONPathSelectionEnv(SCIONPathSelectionEnv):
         # For RL: store historical path performance
         self.path_history = {}  # (src, dst, path_hash) -> recent_metrics
         
-    def reset(self, source_as: Optional[int] = None, dest_as: Optional[int] = None):
-        """Reset environment for new episode"""
-        state = super().reset()
-        
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Reset environment for new episode."""
+        state, info = super().reset(seed=seed, options=options, **kwargs)
+
         # Don't probe paths yet - let the method decide
         self.unprobed_paths = self.available_paths.copy()
         self.probed_path_metrics = {}  # path_index -> metrics
-        
-        return state
+
+        info = dict(info)
+        info["unprobed_path_count"] = len(self.unprobed_paths)
+        return state, info
     
     def probe_path(self, path_index: int) -> Dict:
         """
@@ -150,7 +158,7 @@ class RealisticSCIONPathSelectionEnv(SCIONPathSelectionEnv):
         if len(self.path_history[path_key]) > 20:
             self.path_history[path_key].pop(0)
     
-    def step(self, action: int):
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
         """
         Step environment with selected action
         RL agents can use this without probing all paths first
@@ -162,7 +170,7 @@ class RealisticSCIONPathSelectionEnv(SCIONPathSelectionEnv):
             actual_metrics = self.probed_path_metrics[action]
         
         # Call parent step
-        next_state, reward, done, info = super().step(action)
+        next_state, reward, terminated, truncated, info = super().step(action)
         
         # Update historical data
         self.update_path_history(action, actual_metrics)
@@ -172,7 +180,7 @@ class RealisticSCIONPathSelectionEnv(SCIONPathSelectionEnv):
         info['probe_overhead_ms'] = self.total_probe_time_ms
         info['probe_bandwidth_cost_mbps'] = self.total_probe_bandwidth_mbps
         
-        return next_state, reward, done, info
+        return next_state, reward, terminated, truncated, info
     
     def get_probing_stats(self) -> Dict:
         """Get statistics about probing overhead"""

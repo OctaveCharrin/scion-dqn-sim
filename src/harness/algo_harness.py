@@ -16,7 +16,8 @@ from concurrent.futures import ProcessPoolExecutor
 import importlib
 import yaml
 
-from ..path_services.pathfinder import PathFinder, Path
+from ..path_services.pathfinder_v2 import PathFinderV2 as PathFinder
+from ..path_services.pathfinder_v2 import SCIONPath
 from ..path_services.pathprobe import PathProbe, PathMetrics
 
 
@@ -34,7 +35,7 @@ class FlowRequest:
 class FlowResult:
     """Result of scheduling a flow"""
     flow_id: int
-    path: Optional[Path]
+    path: Optional[SCIONPath]
     metrics: Optional[PathMetrics]
     success: bool
     algorithm: str
@@ -51,9 +52,9 @@ class PathSelectionAlgorithm(ABC):
     def select_path(self, 
                    src: int, 
                    dst: int,
-                   available_paths: List[Path],
+                   available_paths: List[SCIONPath],
                    path_metrics: List[PathMetrics],
-                   flow_request: FlowRequest) -> Optional[Path]:
+                   flow_request: FlowRequest) -> Optional[SCIONPath]:
         """
         Select best path for a flow
         
@@ -95,9 +96,14 @@ class AlgorithmHarness:
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        seg_path = Path(segment_dir)
+        if seg_path.is_dir():
+            cand = seg_path / "segments_corrected.pkl"
+            seg_path = cand if cand.is_file() else seg_path
+
         # Initialize path services
-        self.path_finder = PathFinder(topology_path, segment_dir, link_table_path)
+        self.path_finder = PathFinder(topology_path, seg_path, link_table_path)
         self.path_probe = PathProbe(link_metrics_path, link_table_path, metrics_shape)
         
         # Load registered algorithms

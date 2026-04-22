@@ -1,9 +1,11 @@
 """
-Fixed-source OpenAI Gym environment for SCION path selection
+Fixed-source Gymnasium environment for SCION path selection
 Implements realistic deployment where agent runs at a specific AS
 """
 
-import gym
+from __future__ import annotations
+
+import gymnasium as gym
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Any, Set
 from pathlib import Path
@@ -24,12 +26,14 @@ FixedSourceSCIONPathSelectionEnv = None  # Will be set after class definition
 
 class SCIONPathSelectionEnvFixedSource(gym.Env):
     """
-    Gym environment for SCION path selection with fixed source AS
+    Gymnasium environment for SCION path selection with fixed source AS
     
     This environment models a realistic deployment where the path selection
     agent is deployed at a specific AS and makes decisions for outgoing traffic
     from that AS to various destinations.
     """
+
+    metadata = {"render_modes": ["human"]}
     
     def __init__(self, 
                  topology_path: Path,
@@ -128,18 +132,30 @@ class SCIONPathSelectionEnvFixedSource(gym.Env):
                    f"max_paths={self.max_paths}, "
                    f"fixed_source={source_as}")
     
-    def reset(self, source_as: Optional[int] = None, 
-              dest_as: Optional[int] = None) -> np.ndarray:
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
-        Reset environment for new episode
-        
-        Args:
-            source_as: Override source AS for this episode (must be provided on first reset)
-            dest_as: Specific destination AS for first flow (optional)
-            
-        Returns:
-            Initial state vector
+        Reset environment for new episode.
+
+        Pass ``source_as`` / ``dest_as`` either in ``options`` (Gymnasium style) or
+        as keyword arguments for backward compatibility, e.g.::
+
+            obs, info = env.reset(options={"source_as": 1, "dest_as": 2})
+            obs, info = env.reset(source_as=1, dest_as=2)
         """
+        opts = dict(options or {})
+        for key in ("source_as", "dest_as"):
+            if key in kwargs:
+                opts[key] = kwargs[key]
+        source_as = opts.get("source_as")
+        dest_as = opts.get("dest_as")
+        super().reset(seed=seed)
+
         # Set source AS (required on first reset if not provided in __init__)
         if source_as is not None:
             self.source_as = source_as
@@ -182,9 +198,9 @@ class SCIONPathSelectionEnvFixedSource(gym.Env):
         
         # Get initial state
         state = self._get_state()
-        
-        return state
-    
+        info: Dict[str, Any] = {"source_as": self.source_as}
+        return state, info
+
     def _initialize_destination_popularity(self):
         """Initialize destination popularity using Zipf distribution"""
         n_destinations = len(self.destination_ases)
@@ -200,8 +216,10 @@ class SCIONPathSelectionEnvFixedSource(gym.Env):
             dest: weight for dest, weight in zip(shuffled_dests, weights)
         }
     
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
-        """Execute path selection action"""
+    def step(
+        self, action: int
+    ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
+        """Execute path selection action (Gymnasium step API)."""
         # Validate action
         if action >= len(self.available_paths):
             # Invalid action - use shortest path as fallback
@@ -246,18 +264,19 @@ class SCIONPathSelectionEnvFixedSource(gym.Env):
         self.current_time_slot = (self.current_time_slot + 1) % self.time_slots
         self.steps_in_episode += 1
         
-        # Check if episode is done
-        done = self.steps_in_episode >= self.episode_length
-        
+        # Check if episode is done (no truncation in this env)
+        terminated = self.steps_in_episode >= self.episode_length
+        truncated = False
+
         # Generate new flow for next step
-        if not done:
+        if not terminated:
             self._generate_new_flow()
             next_state = self._get_state()
         else:
             next_state = np.zeros(self.observation_space.shape[0])
         
         # Prepare info
-        info = {
+        info: Dict[str, Any] = {
             'valid_action': valid_action,
             'selected_path': selected_path,
             'path_metrics': selected_metrics,
@@ -267,10 +286,10 @@ class SCIONPathSelectionEnvFixedSource(gym.Env):
             'source_as': self.source_as
         }
         
-        if done:
+        if terminated:
             info['episode_stats'] = self._get_episode_summary()
         
-        return next_state, reward, done, info
+        return next_state, reward, terminated, truncated, info
     
     def _generate_new_flow(self, dest_as: Optional[int] = None):
         """

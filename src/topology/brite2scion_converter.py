@@ -46,7 +46,10 @@ class BRITE2SCIONConverter:
         """
         # Read BRITE topology
         G, node_attrs = self._read_brite_edges(brite_file)
-        
+        for n in G.nodes():
+            G.nodes[n]["x"] = float(node_attrs[n]["x"])
+            G.nodes[n]["y"] = float(node_attrs[n]["y"])
+
         # Automatically adjust n_isds for small topologies
         topology_size = len(G.nodes())
         if topology_size < 200:
@@ -106,11 +109,67 @@ class BRITE2SCIONConverter:
         self.n_isds = self.original_n_isds
             
         return topology
+
+    def convert_brite_file(self, brite_file: Path) -> Dict:
+        """
+        Load a BRITE ``.brite`` export, run SCION assignment/classification, and return
+        the structure expected by ``evaluation/01_generate_topology.py`` (graph + isds + core_ases).
+        """
+        brite_file = Path(brite_file)
+        G, node_attrs = self._read_brite_edges(brite_file)
+        for n in G.nodes():
+            G.nodes[n]["x"] = float(node_attrs[n]["x"])
+            G.nodes[n]["y"] = float(node_attrs[n]["y"])
+
+        topology_size = len(G.nodes())
+        if topology_size < 200:
+            self.n_isds = 1
+            print(f"Topology has {topology_size} ASes (< 200), using 1 ISD")
+        else:
+            print(f"Topology has {topology_size} ASes (>= 200), using {self.n_isds} ISDs")
+
+        isd_assignment = self._assign_isds(G, node_attrs)
+        core_ases = self._select_core_ases(G, isd_assignment)
+        self._ensure_core_connectivity(G, core_ases)
+        self._ensure_multi_parent_connectivity(G, core_ases, isd_assignment)
+        self._add_dense_connections(G, core_ases, isd_assignment)
+        link_types = self._classify_links(G, core_ases, isd_assignment)
+
+        for n in G.nodes():
+            G.nodes[n]["isd"] = int(isd_assignment[n])
+
+        for u, v in G.edges():
+            lt = link_types.get((u, v)) or link_types.get((v, u))
+            if lt is None:
+                lt = "peer"
+            delay = float(G[u][v].get("delay", 1.0))
+            bw = float(G[u][v].get("bandwidth", 10.0))
+            G[u][v]["type"] = lt.upper().replace("-", "_")
+            G[u][v]["latency"] = delay
+            G[u][v]["bandwidth"] = bw
+
+        isds = [
+            {
+                "isd_id": int(isd_id),
+                "member_ases": sorted(
+                    n for n, k in isd_assignment.items() if k == isd_id
+                ),
+            }
+            for isd_id in sorted(set(isd_assignment.values()))
+        ]
+
+        self.n_isds = self.original_n_isds
+
+        return {
+            "graph": G,
+            "isds": isds,
+            "core_ases": set(core_ases),
+        }
     
     def _read_brite_edges(self, brite_file: Path) -> Tuple[nx.Graph, Dict]:
-        """Read BRITE edges file and extract node positions"""
+        """Read BRITE topology file (BriteExport format) and extract node positions and edges."""
         G = nx.Graph()
-        node_attrs = {}
+        node_attrs: Dict[int, Dict[str, float]] = {}
         
         with open(brite_file) as f:
             in_nodes = False
@@ -118,32 +177,38 @@ class BRITE2SCIONConverter:
             
             for line in f:
                 line = line.strip()
-                
-                if 'Nodes:' in line or line.startswith('Nodes:'):
+                if not line or line.startswith("#"):
+                    continue
+                lower = line.lower()
+                if lower.startswith("topology:"):
+                    continue
+                if lower.startswith("nodes:"):
                     in_nodes = True
                     in_edges = False
                     continue
-                elif 'Edges:' in line or line.startswith('Edges:'):
+                if lower.startswith("edges:"):
                     in_nodes = False
                     in_edges = True
                     continue
                     
-                if in_nodes and line and not line.startswith('#'):
-                    parts = line.split('\t') if '\t' in line else line.split()
-                    if len(parts) >= 4:
+                if in_nodes:
+                    parts = line.split("\t") if "\t" in line else line.split()
+                    if len(parts) >= 3:
                         node_id = int(parts[0])
                         x = float(parts[1])
                         y = float(parts[2])
-                        node_attrs[node_id] = {'x': x, 'y': y}
+                        node_attrs[node_id] = {"x": x, "y": y}
                         G.add_node(node_id)
                         
-                elif in_edges and line and not line.startswith('#'):
-                    parts = line.split('\t') if '\t' in line else line.split()
-                    if len(parts) >= 5:
+                elif in_edges:
+                    parts = line.split("\t") if "\t" in line else line.split()
+                    if len(parts) >= 6:
                         u = int(parts[1])
                         v = int(parts[2])
-                        bw = float(parts[4]) if len(parts) > 4 else 10.0
-                        G.add_edge(u, v, bandwidth=bw)
+                        dist = float(parts[3])
+                        delay = float(parts[4])
+                        bw = float(parts[5])
+                        G.add_edge(u, v, bandwidth=bw, delay=delay, length=dist)
         
         return G, node_attrs
     

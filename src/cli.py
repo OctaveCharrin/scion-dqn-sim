@@ -19,7 +19,7 @@ from .topology.brite_cfg_gen import BRITEConfigGenerator, BRITERunner
 from .topology.brite2scion_converter import BRITE2SCIONConverter
 from .link_annotation.capacity_delay_builder import CapacityDelayBuilder
 from .traffic.traffic_engine import TrafficEngine, LinkMetricBuilder
-from .beacon.beacon_sim import BeaconSimulator
+from .beacon.beacon_sim_v2 import CorrectedBeaconSimulator
 from .harness.algo_harness import (
     AlgorithmHarness, ShortestPathAlgorithm, 
     LowestLatencyAlgorithm, RandomAlgorithm
@@ -193,14 +193,14 @@ def simulate(
         )
         progress.advance(task)
         
-        # Run beaconing
+        # Run beaconing (v2 simulator writes segment pickles under output_dir)
         task = progress.add_task("Simulating SCION beaconing...", total=1)
-        beacon_sim = BeaconSimulator()
         segment_dir = output_dir / "segments"
-        stats = beacon_sim.simulate(
+        segment_dir.mkdir(parents=True, exist_ok=True)
+        beacon_sim = CorrectedBeaconSimulator()
+        _segment_store, stats = beacon_sim.simulate(
             topology_dir / "topology.pkl",
-            topology_dir / "link_table.parquet",
-            segment_dir
+            segment_dir,
         )
         progress.advance(task)
         
@@ -212,7 +212,10 @@ def simulate(
     table.add_row("Traffic Generation", "✓ Complete")
     table.add_row("Link Metrics", "✓ Complete")
     table.add_row("Beaconing", "✓ Complete")
-    table.add_row("Core Segments", str(stats['core_segments']))
+    table.add_row(
+        "Core Segments",
+        str(stats.get("totals", {}).get("core_segments", stats.get("core_segments", 0))),
+    )
     
     console.print(table)
 

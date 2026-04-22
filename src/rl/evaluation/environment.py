@@ -3,7 +3,9 @@ SCION Path Selection Environment for Evaluation Pipeline
 Compatible with evaluation data formats
 """
 
-import gym
+from __future__ import annotations
+
+import gymnasium as gym
 import numpy as np
 import pickle
 from typing import Dict, List, Optional, Tuple, Any
@@ -15,9 +17,11 @@ logger = logging.getLogger(__name__)
 
 class EvaluationEnv(gym.Env):
     """
-    Gym environment for SCION path selection evaluation
+    Gymnasium environment for SCION path selection evaluation
     Works directly with evaluation pipeline data formats
     """
+
+    metadata = {"render_modes": ["human"]}
     
     def __init__(self,
                  topology: Any,
@@ -173,8 +177,14 @@ class EvaluationEnv(gym.Env):
         
         return paths
     
-    def reset(self) -> np.ndarray:
-        """Reset environment for new episode"""
+    def reset(
+        self,
+        *,
+        seed: Optional[int] = None,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+        """Reset environment for new episode."""
+        super().reset(seed=seed)
         self.current_step = 0
         self.current_time = np.random.randint(0, self.training_days * 24 * 60 - self.episode_duration)
         self.episode_flows = []
@@ -189,10 +199,11 @@ class EvaluationEnv(gym.Env):
         }
         
         # Get initial state
-        return self._get_state()
-    
-    def step(self, action: int) -> Tuple[np.ndarray, float, bool, Dict]:
-        """Execute action and return results"""
+        obs = self._get_state()
+        return obs, {}
+
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
+        """Execute action and return results (Gymnasium step API)."""
         # Get current flow
         flow_idx = self._get_current_flow_index()
         if flow_idx is None:
@@ -235,12 +246,13 @@ class EvaluationEnv(gym.Env):
         self.current_time += 1
         
         # Check if episode is done
-        done = self.current_step >= self.episode_duration
-        
+        terminated = self.current_step >= self.episode_duration
+        truncated = False
+
         # Get next state
         next_state = self._get_state()
         
-        return next_state, reward, done, info
+        return next_state, reward, terminated, truncated, info
     
     def _get_current_flow_index(self) -> Optional[int]:
         """Get index of flow starting at current time"""
@@ -399,12 +411,12 @@ class EvaluationEnv(gym.Env):
         
         return np.array(state, dtype=np.float32)
     
-    def render(self, mode='human'):
-        """Render environment (optional)"""
-        if mode == 'human':
-            print(f"Step: {self.current_step}, Time: {self.current_time}")
-            print(f"Recent success rate: {np.mean(self.episode_successes[-10:]):.2%}")
-            print(f"Average reward: {np.mean(self.episode_rewards[-10:]):.2f}")
+    def render(self):
+        """Print simple text diagnostics."""
+        print(f"Step: {self.current_step}, Time: {self.current_time}")
+        print(f"Recent success rate: {np.mean(self.episode_successes[-10:]):.2%}")
+        print(f"Average reward: {np.mean(self.episode_rewards[-10:]):.2f}")
+        return None
     
     def close(self):
         """Clean up environment"""
