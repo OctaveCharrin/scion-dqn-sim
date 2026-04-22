@@ -11,11 +11,13 @@ This document explains how the **SCION DQN simulation** repository is structured
 3. **Simulate traffic and link conditions** over time.
 4. **Train and evaluate** a **DQN** (and **baselines**) for **path selection** under **selective probing** (different probe costs, not probing every path).
 
-The code mixes three “layers”: **topology generation**, **simulation / RL environment**, and **evaluation scripts** that glue everything into a numbered pipeline under `evaluation/`.
+The code is organized in layers: **topology generation** (`src/topology/`, BRITE), **simulation + RL** (`src/simulation/`, `src/beacon/`, `src/rl/`, `src/baselines/`), and **evaluation drivers** (`evaluation/*.py`) that form the main numbered pipeline.
 
 ---
 
-## Big picture: two ways to run the system
+## Big picture: evaluation-driven workflow
+
+For RL training and paper-style experiments, the supported path is the **numbered scripts under `evaluation/`** (orchestrated by `run_full_evaluation.py`).
 
 ```mermaid
 flowchart TB
@@ -29,17 +31,9 @@ flowchart TB
     E01 --> E02 --> E03 --> E04 --> E05 --> E06
   end
 
-  subgraph cli_flow [src/cli.py experiment flow]
-    BRITE["BRITEConfigGenerator +\nBRITERunner"]
-    CONV["BRITE2SCIONConverter.convert()\n→ topology.pkl"]
-    CAP["CapacityDelayBuilder\n→ link_table"]
-    TRAF["TrafficEngine"]
-    BEAC["BeaconSimulator\n(imports may differ from files on disk)"]
-    BRITE --> CONV --> CAP --> TRAF --> BEAC
-  end
-
   subgraph libs [shared libraries under src/]
     TOP["topology/*"]
+    SIM["simulation/*"]
     RL["rl/*"]
     BASE["baselines/*"]
     PATH["path_services/*"]
@@ -47,10 +41,11 @@ flowchart TB
   end
 
   E01 -.-> TOP
+  E02 -.-> BEA
+  E02 -.-> SIM
   E04 -.-> RL
   E05 -.-> RL
   E05 -.-> BASE
-  cli_flow -.-> TOP
 ```
 
 
@@ -60,10 +55,9 @@ flowchart TB
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `evaluation/run_full_evaluation.py`   | Runs `01`–`06` in order with a timestamped `evaluation/run_*` directory.                                                         |
 | `evaluation/run_full_evaluation_2.py` | Alternate pipeline using mock dense setup (`01_setup_dense_topology.py`) and different figure script; same “numbered step” idea. |
-| `src/cli.py`                          | Typer CLI: `generate`, `simulate`, etc.—oriented toward `**topology.pkl` + `link_table.parquet**` and `beacon_sim` integration.  |
 
 
-Important: **the evaluation scripts and the CLI do not use identical data shapes.** Evaluation favors `**scion_topology.json`** (NetworkX node-link) plus pickles; the CLI path favors **pandas pickles** (`topology['nodes']`, `topology['edges']`). Unifying those formats is a natural improvement (see [How to improve it](#how-to-improve-it)).
+Evaluation uses `**scion_topology.json**` (NetworkX node-link) plus run-scoped pickles (`path_store.pkl`, `link_states.pkl`, etc.). Older **pandas `topology.pkl`** + `link_table.parquet` flows still exist under `src/` for reuse (e.g. `BRITE2SCIONConverter.convert()`, traffic engine) but are not wired through a Typer CLI anymore.
 
 ---
 
@@ -76,11 +70,11 @@ Important: **the evaluation scripts and the CLI do not use identical data shapes
 | `configs/brite_templates/`   | Example `.conf` files matching BRITE’s numeric parser (used as reference; generator code builds equivalent text).                                                                                                  |
 | `evaluation/`                | **End-to-end experiment drivers**: topology → beaconing → traffic → train → evaluate → figures. Each script usually accepts `run_DIR` as argv.                                                                     |
 | `src/topology/`              | BRITE **config generation** (`brite_cfg_gen.py`), **BRITE → SCION-ish graph** (`brite2scion_converter.py`).                                                                                                        |
-| `src/beacon/`                | `**beacon_sim_v2.py`**: beacon simulation over `**topology.pkl**` (node/edge DataFrames).                                                                                                                          |
+| `src/beacon/`                | `**beacon_sim_v2.py`**: beacon simulation over `**topology.pkl`** (node/edge DataFrames).                                                                                                                          |
 | `src/traffic/`               | `**traffic_engine.py**`: traffic matrix generation tied to topology pickles / memmaps.                                                                                                                             |
 | `src/link_annotation/`       | `**capacity_delay_builder.py**`: annotate links from topology pickle.                                                                                                                                              |
 | `src/path_services/`         | `**pathfinder_v2.py**`, `**pathprobe.py**`: path representation, probing metrics (used by harness / RL-style flows).                                                                                               |
-| `src/harness/`               | `**algo_harness.py**`: benchmark harness; imports `**pathfinder**` (not only `pathfinder_v2`)—worth aligning.                                                                                                      |
+| `src/harness/`               | `**algo_harness.py**`: optional benchmark harness for path algorithms (pickle topology + memmaps); not used by the evaluation scripts.                                                                             |
 | `src/baselines/`             | Individual selectors: shortest path, widest, ECMP, random, SCION default, wrappers.                                                                                                                                |
 | `src/rl/`                    | DQN agents (`dqn_agent_enhanced.py`, `evaluation/dqn_agent.py`), **Gym-style** envs (`environment_*.py`), **selective probing** stack (`environment_selective_probing.py`, `selective_probing_agent.py`, rewards). |
 | `src/visualization/`         | Topology visualization helpers.                                                                                                                                                                                    |
@@ -94,7 +88,7 @@ Important: **the evaluation scripts and the CLI do not use identical data shapes
 
 - **Submodule**: `external/brite` (see `.gitmodules`).
 - **Setup**: `./setup_brite.sh` checks Java, initializes the submodule, runs `make` in `Java/`, then `**jar cfe`** to build `Java/Brite.jar` (upstream Makefile only compiles classes).
-- **Invocation contract**: `Main.Brite` expects **three** arguments: `config.conf`, **output path without `.brite` suffix**, and `**Java/seed_file`**. BRITE writes `**<stem>.brite**`.
+- **Invocation contract**: `Main.Brite` expects **three** arguments: `config.conf`, **output path without `.brite` suffix**, and `**Java/seed_file`**. BRITE writes `**<stem>.brite`**.
 - **Python side**: `BRITEConfigGenerator` writes a valid **numeric** BRITE config; `BRITERunner` (fallback in `brite_cfg_gen.py`) shells out to the JAR with the seed path. `evaluation/01_generate_topology.py` does the same for the evaluation pipeline.
 
 ---
@@ -106,25 +100,25 @@ All steps share a directory like `evaluation/run_YYYYMMDD_HHMMSS/`. `run_full_ev
 ### Step 1 — `01_generate_topology.py`
 
 1. `**BRITEConfigGenerator`** writes `brite_config.conf` (model codes such as AS Barabási–Albert / BA-2, `N`, bandwidth distribution, etc.).
-2. `**run_brite()**` runs the JAR; consumes `**topology**` stem → produces `**topology.brite**`.
+2. `**run_brite()`** runs the JAR; consumes `**topology`** stem → produces `**topology.brite**`.
 3. `**BRITE2SCIONConverter.convert_brite_file()**` reads the BRITE export, assigns **ISDs** (k-means on coordinates for multi-ISD; single ISD for small graphs), picks **core ASes**, adds **virtual edges** for connectivity / diversity, **classifies links**, and returns a dict with:
   - `**graph`**: `networkx` graph (node attrs include `isd`, `x`, `y`; edges have `type`, `latency`, `bandwidth`),
-  - `**isds**`: list of `{isd_id, member_ases}`,
-  - `**core_ases**`: set of AS ids.
+  - `**isds`**: list of `{isd_id, member_ases}`,
+  - `**core_ases`**: set of AS ids.
 4. Optional **extra peering** edges are added in the script for denser graphs.
-5. Writes `**scion_topology.json`** (node-link graph + metadata) and `**scion_topology.pkl**`.
+5. Writes `**scion_topology.json`** (node-link graph + metadata) and `**scion_topology.pkl`**.
 
 **Downstream contract**: later steps load `**scion_topology.json`** for dict/json usage.
 
 ### Step 2 — `02_run_beaconing.py`
 
-- Loads `**scion_topology.json**`, rebuilds `**networkx**` graph, builds a `**topology**` dict for the simulator.
+- Loads `**scion_topology.json`**, rebuilds `**networkx`** graph, builds a `**topology**` dict for the simulator.
 - Intended to run `**SCIONSimulator**` from `**src.simulation.scion_simulator**` and `**InMemoryPathStore**` from `**src.simulation.path_store**`.
 - Saves `**path_store.pkl**` and `**selected_pair.json**` (src/dst AS, path count, etc.).
 
 ### Step 3 — `03_simulate_traffic.py`
 
-- Reads topology, **selected pair**, `**path_store.pkl`**, generates **28 days** of flow samples (hourly), builds `**traffic_flows.pkl`** and `**link_states.pkl**` for the same run directory.
+- Reads topology, **selected pair**, `**path_store.pkl`**, generates 28 days of flow samples (hourly), builds `**traffic_flows.pkl`** and `**link_states.pkl**` for the same run directory.
 
 ### Step 4 — `04_train_dqn.py`
 
@@ -146,7 +140,7 @@ Imports also reference modules such as `**state_extractor_enhanced**` and `**rew
 ### Alternate path — `01_setup_dense_topology.py` + `run_full_evaluation_2.py`
 
 - **Pure Python** “tiered” topology (core / tier1 / tier2) with **synthetic beaconing** and path diversity selection—**no BRITE JAR**.
-- Writes `**dense_*.pkl`** / `**dense_config.json**` instead of BRITE outputs. Step 2 onward must agree on filenames and shapes; today `**run_full_evaluation_2.py**` still calls `**02_run_beaconing.py**`, which expects `**scion_topology.json**`. Treat this branch as **integration-in-progress** unless you add a translation layer.
+- Writes `**dense_*.pkl`** / `**dense_config.json`** instead of BRITE outputs. Step 2 onward must agree on filenames and shapes; today `**run_full_evaluation_2.py`** still calls `**02_run_beaconing.py**`, which expects `**scion_topology.json**`. Treat this branch as **integration-in-progress** unless you add a translation layer.
 
 ---
 
@@ -157,11 +151,11 @@ Imports also reference modules such as `**state_extractor_enhanced**` and `**rew
 
 | Module                     | Responsibility                                                                                                                                                                                          |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `brite_cfg_gen.py`         | Valid BRITE `**.conf`** text; `**BRITERunner**` to execute BRITE.                                                                                                                                       |
-| `brite2scion_converter.py` | Parse `**.brite**` topology text → **NetworkX**; ISD/core/virtual link logic; `**convert()`** → pickle with **nodes/edges DataFrames**; `**convert_brite_file()`** → dict for **evaluation JSON** path. |
+| `brite_cfg_gen.py`         | Valid BRITE `**.conf`** text; `**BRITERunner`** to execute BRITE.                                                                                                                                       |
+| `brite2scion_converter.py` | Parse `**.brite`** topology text → **NetworkX**; ISD/core/virtual link logic; `**convert()`** → pickle with **nodes/edges DataFrames**; `**convert_brite_file()`** → dict for **evaluation JSON** path. |
 
 
-**Interaction**: CLI `**generate`** uses `**convert()**`; evaluation `**01**` uses `**convert_brite_file()**`.
+**Interaction**: CLI `**generate`** uses `**convert()`**; evaluation `**01`** uses `**convert_brite_file()**`.
 
 ### Beacon (`src/beacon/beacon_sim_v2.py`)
 
@@ -172,10 +166,10 @@ Imports also reference modules such as `**state_extractor_enhanced**` and `**rew
 
 ### Traffic (`src/traffic/traffic_engine.py`)
 
-- `**TrafficEngine**`: time-slotted traffic generation from topology pickle paths.
-- `**LinkMetricBuilder**`: derives per-link metrics from traffic memmaps + topology.
+- `**TrafficEngine`**: time-slotted traffic generation from topology pickle paths.
+- `**LinkMetricBuilder`**: derives per-link metrics from traffic memmaps + topology.
 
-**Interaction**: Consumes `**topology.pkl`** and `**link_table.parquet**` in the CLI `simulate` flow.
+**Interaction**: Consumes `**topology.pkl`** and `**link_table.parquet`** in the CLI `simulate` flow.
 
 ### Link annotation (`src/link_annotation/capacity_delay_builder.py`)
 
@@ -184,9 +178,9 @@ Imports also reference modules such as `**state_extractor_enhanced**` and `**rew
 ### Path services (`src/path_services/`)
 
 - `**pathprobe.py`**: models **path metrics** and probing cost.
-- `**pathfinder_v2.py`**: `**SCIONPath**`, `**PathFinderV2**`—segment-aware path enumeration from topology + segment store + link table.
+- `**pathfinder_v2.py`**: `**SCIONPath`**, `**PathFinderV2**`—segment-aware path enumeration from topology + segment store + link table.
 
-**Interaction**: `**algo_harness.py`** wires algorithms to `**PathFinder**` / `**PathProbe**` (check import paths vs `pathfinder_v2`).
+**Interaction**: `**algo_harness.py`** wires algorithms to `**PathFinder`** / `**PathProbe`** (check import paths vs `pathfinder_v2`).
 
 ### Harness (`src/harness/algo_harness.py`)
 
@@ -216,18 +210,11 @@ Gymnasium **API**: `reset` returns `(observation, info)` and `step` returns `(ob
 
 **Interaction chain for DQN training**: **topology + path_store + link_states + traffic_flows** → **environment** → **agent** → checkpoint.
 
-### CLI (`src/cli.py`)
-
-- `**generate`**: BRITE conf → run → `**convert()**` → `**CapacityDelayBuilder.annotate()**`.
-- `**simulate**`: traffic → metrics → `**BeaconSimulator.simulate()**` (import name may not match `beacon_sim_v2.py` on disk—fix when unifying).
-
----
-
 ## Configuration and environment
 
-- **Python**: Prefer `**uv sync --extra dev`** from repo root; use `**uv run python ...**` inside `evaluation/` for scripts.
+- **Python**: Prefer `**uv sync --extra dev`** from repo root; use `**uv run python ...`** inside `evaluation/` for scripts.
 - **Java**: Required for BRITE (`./setup_brite.sh`).
-- **YAML**: Under `src/config/` for CLI-style experiments (`sim.yml`, `traffic.yml`, etc.).
+- **YAML**: Under `src/config/` for simulator / traffic settings (`sim.yml`, `traffic.yml`, etc.) if you extend those modules.
 
 ---
 
@@ -235,22 +222,18 @@ Gymnasium **API**: `reset` returns `(observation, info)` and `step` returns `(ob
 
 These are common tripping points when “making the repo run end-to-end”:
 
-1. `**src/simulation/`** — `evaluation/02_run_beaconing.py` imports `**SCIONSimulator**` and `**InMemoryPathStore**` here; that package may be **missing** on your checkout. Either implement thin adapters to `**beacon_sim_v2`** + a path store, or re-point the evaluation scripts.
-2. **Two topology shapes** — `**convert()`** (DataFrames + pickle) vs `**convert_brite_file()**` (NetworkX + JSON). Pick one canonical representation or add explicit converters.
-3. **CLI import drift** — `cli.py` references `**beacon_sim.BeaconSimulator`** and `**pathfinder.PathFinder**`; the repo may only have `**beacon_sim_v2**` / `**pathfinder_v2**`. Align names or add shim modules.
-4. **Evaluation imports** — `04_train_dqn.py` / `05_evaluate_methods.py` may import modules not present under `src/`; grep those imports before a demo run.
-5. `**01_setup_dense_topology.py`** — fixed internal `**n_core` / `n_tier1**` counts assume **large `n_ases`**; small values go negative unless you retune the split.
+1. **Two topology shapes** — `**convert()`** (DataFrames + pickle) vs `**convert_brite_file()`** (NetworkX + JSON). Pick one canonical representation or add explicit converters.
+2. **Evaluation imports** — `04_train_dqn.py` / `05_evaluate_methods.py` should stay aligned with `src/rl` and `src/simulation`; grep those imports before a demo run.
+3. `**01_setup_dense_topology.py`** — fixed internal `**n_core` / `n_tier1`** counts assume **large `n_ases`**; small values go negative unless you retune the split.
 
 ---
 
 ## How to improve it (practical order)
 
-1. **Single topology model** — Define one schema (e.g. `TopologyBundle` with graph + isds + core + optional DataFrames) and functions `**to_json` / `from_pickle`** used by both CLI and `evaluation/`.
-2. **Unify beaconing** — One implementation behind `**SCIONSimulator`** or change `**02_run_beaconing.py**` to call `**CorrectedBeaconSimulator**` with an adapter from JSON → temporary pickle if needed.
-3. **Fix import graph** — Add missing `**src/simulation/`** stubs or re-exports; add `**pathfinder.py**` re-exporting `**pathfinder_v2**`; fix `**beacon_sim**` vs `**beacon_sim_v2**`.
-4. **Tests** — Extend `**src/test_basic.py`** (and pytest) to cover: BRITE conf round-trip, a tiny BRITE run, `**convert_brite_file**` on fixture `.brite`, one RL env `reset`/`step` with fake data.
-5. **Pipeline 2** — Either generate `**scion_topology.json`** from dense mock setup or give `**02_run_beaconing**` a branch on input format.
-6. **Observability** — Replace `subprocess.run(..., capture_output=True)` silent failures in `**run_full_evaluation.py`** with streaming logs or log files under `run_*`.
+1. **Single topology model** — Define one schema (e.g. `TopologyBundle` with graph + isds + core + optional DataFrames) and functions `**to_json` / `from_pickle`** shared by `evaluation/` and any pickle-based tools.
+2. **Tests** — Extend `**src/test_basic.py`** (and pytest) to cover: BRITE conf round-trip, a tiny BRITE run, `**convert_brite_file`** on fixture `.brite`, one RL env `reset`/`step` with fake data.
+3. **Pipeline 2** — Either generate `**scion_topology.json`** from dense mock setup or give `**02_run_beaconing`** a branch on input format.
+4. **Observability** — Replace `subprocess.run(..., capture_output=True)` silent failures in `**run_full_evaluation.py`** with streaming logs or log files under `run_`*.
 
 ---
 
@@ -280,6 +263,6 @@ figure*.pdf             ← plotting
 4. `src/topology/brite2scion_converter.py` — `**convert_brite_file**` vs `**convert**`.
 5. `src/rl/environment_selective_probing.py` — what the RL agent “sees.”
 6. `src/beacon/beacon_sim_v2.py` — control-plane-ish simulation over DataFrames.
-7. `src/harness/algo_harness.py` — how to plug in a new path-selection algorithm without the full evaluation stack.
+7. `src/harness/algo_harness.py` (optional) — benchmark harness for algorithms against pickle topologies + memmaps; not required for `evaluation/`.
 
 This should give you a mental model of **who calls whom**, **which file formats move between steps**, and **where the fragile boundaries** are when you extend the simulator or the learning stack.
