@@ -86,6 +86,17 @@ else
         echo "ERROR: Java/Makefile not found in BRITE directory"
         exit 1
     fi
+
+    # Upstream BRITE Java/Makefile only runs javac; this repo expects Java/Brite.jar
+    if [ ! -f "${JAR_PATH}" ]; then
+        echo "Packaging BRITE into Brite.jar..."
+        (cd "${BRITE_DIR}/Java" && jar cfe Brite.jar Main.Brite \
+            Main/*.class Graph/*.class Model/*.class Import/*.class Export/*.class \
+            Util/*.class Topology/*.class) || {
+            echo "ERROR: Failed to create Brite.jar"
+            exit 1
+        }
+    fi
     
     # Verify JAR was created
     if [ ! -f "${JAR_PATH}" ]; then
