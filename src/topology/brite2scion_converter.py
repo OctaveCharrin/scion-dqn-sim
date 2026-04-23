@@ -33,82 +33,6 @@ class BRITE2SCIONConverter:
         # Bound core_ratio to 5-10%
         self.core_ratio = max(0.05, min(0.10, core_ratio))
         
-    def convert(self, brite_file: Path, output_path: Path) -> Dict:
-        """
-        Convert BRITE topology to SCION format
-        
-        Args:
-            brite_file: Path to BRITE .edges file
-            output_path: Where to save the converted topology
-            
-        Returns:
-            Dictionary with topology data
-        """
-        # Read BRITE topology
-        G, node_attrs = self._read_brite_edges(brite_file)
-        for n in G.nodes():
-            G.nodes[n]["x"] = float(node_attrs[n]["x"])
-            G.nodes[n]["y"] = float(node_attrs[n]["y"])
-
-        # Automatically adjust n_isds for small topologies
-        topology_size = len(G.nodes())
-        if topology_size < 200:
-            # For small topologies, use only 1 ISD
-            self.n_isds = 1
-            print(f"Topology has {topology_size} ASes (< 200), using 1 ISD")
-        else:
-            # Keep original n_isds for larger topologies
-            print(f"Topology has {topology_size} ASes (>= 200), using {self.n_isds} ISDs")
-        
-        # Assign ISDs using geographic k-means
-        isd_assignment = self._assign_isds(G, node_attrs)
-        
-        # Select core ASes per ISD
-        core_ases = self._select_core_ases(G, isd_assignment)
-        
-        # Ensure core connectivity
-        self._ensure_core_connectivity(G, core_ases)
-        
-        # Ensure multi-parent connectivity for path diversity
-        # Note: This should be called BEFORE the automatic multi-core connectivity
-        # in _ensure_core_connectivity to be more effective
-        self._ensure_multi_parent_connectivity(G, core_ases, isd_assignment)
-        
-        # Add additional cross-connections for dense topology
-        self._add_dense_connections(G, core_ases, isd_assignment)
-        
-        # Classify links
-        link_types = self._classify_links(G, core_ases, isd_assignment)
-        
-        # Assign interface IDs
-        interface_ids = self._assign_interface_ids(G)
-        
-        # Build node and edge DataFrames
-        node_df = self._build_node_dataframe(G, node_attrs, isd_assignment, core_ases)
-        edge_df = self._build_edge_dataframe(G, link_types, interface_ids)
-        
-        # Calculate distances for edges
-        edge_df = self._add_edge_distances(edge_df, node_df)
-        
-        # Save topology
-        topology = {
-            'nodes': node_df,
-            'edges': edge_df,
-            'metadata': {
-                'n_nodes': len(node_df),
-                'n_edges': len(edge_df),
-                'n_isds': self.n_isds,
-                'n_core_ases': len(core_ases)
-            }
-        }
-        
-        with open(output_path, 'wb') as f:
-            pickle.dump(topology, f)
-        
-        # Restore original n_isds value to avoid side effects
-        self.n_isds = self.original_n_isds
-            
-        return topology
 
     def convert_brite_file(
         self,
@@ -516,7 +440,7 @@ class BRITE2SCIONConverter:
             # For each non-core AS, check parent connectivity
             for node in non_cores:
                 # Find current distance to nearest core
-                dist_to_core = self._distance_to_core(node, G, core_ases, isd)
+                dist_to_core = self._distance_to_core(node, G, core_ases, isd_assignment, isd)
                 
                 if dist_to_core > 2:  # Far from core, needs better connectivity
                     # Find potential parents (ASes closer to core)
@@ -526,7 +450,7 @@ class BRITE2SCIONConverter:
                         if other == node or other in core_ases:
                             continue
                             
-                        other_dist = self._distance_to_core(other, G, core_ases, isd)
+                        other_dist = self._distance_to_core(other, G, core_ases, isd_assignment, isd)
                         if other_dist < dist_to_core - 1:  # Significantly closer to core
                             # Check if not already connected
                             if not G.has_edge(node, other):
@@ -557,7 +481,7 @@ class BRITE2SCIONConverter:
                         if neighbor in core_ases:
                             parents.append(neighbor)
                         else:
-                            neighbor_dist = self._distance_to_core(neighbor, G, core_ases, isd)
+                            neighbor_dist = self._distance_to_core(neighbor, G, core_ases, isd_assignment, isd)
                             if neighbor_dist < dist_to_core:
                                 parents.append(neighbor)
                     
@@ -578,7 +502,7 @@ class BRITE2SCIONConverter:
                             if other in core_ases:
                                 other_dist = 0
                             else:
-                                other_dist = self._distance_to_core(other, G, core_ases, isd)
+                                other_dist = self._distance_to_core(other, G, core_ases, isd_assignment, isd)
                             
                             if other_dist < dist_to_core and not G.has_edge(node, other):
                                 # Check geographic distance
@@ -618,7 +542,7 @@ class BRITE2SCIONConverter:
                 if isd != isd_id:
                     continue
                     
-                dist = self._distance_to_core(as_id, G, core_ases, isd_id)
+                dist = self._distance_to_core(as_id, G, core_ases, isd_assignment, isd_id)
                 if dist not in as_by_distance[isd_id]:
                     as_by_distance[isd_id][dist] = []
                 as_by_distance[isd_id][dist].append(as_id)
@@ -697,8 +621,8 @@ class BRITE2SCIONConverter:
                 link_types[(u, v)] = 'child-parent'
             elif not u_core and not v_core and u_isd == v_isd:
                 # Determine parent-child direction based on distance to core
-                u_dist = self._distance_to_core(u, G, core_ases, u_isd)
-                v_dist = self._distance_to_core(v, G, core_ases, v_isd)
+                u_dist = self._distance_to_core(u, G, core_ases, isd_assignment, u_isd)
+                v_dist = self._distance_to_core(v, G, core_ases, isd_assignment, v_isd)
                 
                 if u_dist < v_dist:
                     link_types[(u, v)] = 'parent-child'
@@ -755,7 +679,7 @@ class BRITE2SCIONConverter:
         return isd_trees
     
     def _distance_to_core(self, node: int, G: nx.Graph, 
-                         core_ases: set, isd: int) -> int:
+                         core_ases: set, isd_assignment: Dict, isd: int) -> int:
         """Calculate shortest path distance to nearest core AS in same ISD"""
         if node in core_ases:
             return 0
@@ -771,6 +695,10 @@ class BRITE2SCIONConverter:
                 if neighbor in visited:
                     continue
                     
+                # SCION routing isolation: distance mapping MUST stay within the same ISD
+                if isd_assignment.get(neighbor) != isd:
+                    continue
+                    
                 if neighbor in core_ases:
                     return dist + 1
                     
@@ -780,74 +708,3 @@ class BRITE2SCIONConverter:
         # If no path found, return large number
         return 999
     
-    def _assign_interface_ids(self, G: nx.Graph) -> Dict[Tuple[int, int], Tuple[int, int]]:
-        """Assign interface IDs monotonically per AS"""
-        interface_ids = {}
-        as_if_counters = {}
-        
-        for u, v in G.edges():
-            # Assign interface ID for u
-            if u not in as_if_counters:
-                as_if_counters[u] = 0
-            u_if = as_if_counters[u]
-            as_if_counters[u] += 1
-            
-            # Assign interface ID for v
-            if v not in as_if_counters:
-                as_if_counters[v] = 0
-            v_if = as_if_counters[v]
-            as_if_counters[v] += 1
-            
-            interface_ids[(u, v)] = (u_if, v_if)
-            
-        return interface_ids
-    
-    def _build_node_dataframe(self, G: nx.Graph, node_attrs: Dict,
-                             isd_assignment: Dict, core_ases: set) -> pd.DataFrame:
-        """Build node DataFrame with attributes"""
-        data = []
-        for node in G.nodes():
-            data.append({
-                'as_id': node,
-                'isd': isd_assignment[node],
-                'role': 'core' if node in core_ases else 'non-core',
-                'x': node_attrs[node]['x'],
-                'y': node_attrs[node]['y'],
-                'degree': G.degree(node)
-            })
-        
-        return pd.DataFrame(data)
-    
-    def _build_edge_dataframe(self, G: nx.Graph, link_types: Dict,
-                             interface_ids: Dict) -> pd.DataFrame:
-        """Build edge DataFrame with attributes"""
-        data = []
-        for (u, v), link_type in link_types.items():
-            u_if, v_if = interface_ids[(u, v)]
-            data.append({
-                'u': u,
-                'v': v,
-                'u_if': u_if,
-                'v_if': v_if,
-                'type': link_type,
-                'bandwidth': G[u][v].get('bandwidth', 10.0)
-            })
-            
-        return pd.DataFrame(data)
-    
-    def _add_edge_distances(self, edge_df: pd.DataFrame, 
-                           node_df: pd.DataFrame) -> pd.DataFrame:
-        """Calculate geographic distances for edges"""
-        # Create node position lookup
-        pos = {row['as_id']: (row['x'], row['y']) 
-               for _, row in node_df.iterrows()}
-        
-        distances = []
-        for _, edge in edge_df.iterrows():
-            u_pos = pos[edge['u']]
-            v_pos = pos[edge['v']]
-            dist = np.sqrt((u_pos[0] - v_pos[0])**2 + (u_pos[1] - v_pos[1])**2)
-            distances.append(dist)
-            
-        edge_df['dist_km'] = distances
-        return edge_df
