@@ -13,8 +13,6 @@ from pathlib import Path
 import numpy as np
 import networkx as nx
 
-from _common import resolve_run_dir
-
 from src.topology.brite_cfg_gen import BRITEConfigGenerator, run_brite
 from src.topology.brite2scion_converter import BRITE2SCIONConverter
 
@@ -81,7 +79,7 @@ num_peering_to_add = min(75, max(2, len(nodes) * len(nodes) // 4))
 added = 0
 interface_id = 1000  # Start peering interfaces at 1000
 
-for _ in range(2000):  # Try many times
+while added < num_peering_to_add:
     # Use Python int endpoints: numpy types + json.dump(..., default=str) would
     # stringify node ids on edges, and node_link_graph would treat "2" and 2 as
     # different ASes (inflated AS count after reload).
@@ -113,8 +111,6 @@ for _ in range(2000):  # Try many times
     
     interface_id += 2
     added += 1
-    if added >= num_peering_to_add:
-        break
 
 print(f"Added {added} additional peering links")
 

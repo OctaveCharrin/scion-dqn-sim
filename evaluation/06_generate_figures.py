@@ -81,7 +81,6 @@ for bar, val in zip(bars2, selection_times):
         fontsize=8,
     )
 
-fig1.savefig(os.path.join(run_dir, "figure1_probe_overhead.pdf"), dpi=300, bbox_inches="tight")
 fig1.savefig(os.path.join(run_dir, "figure1_probe_overhead.png"), dpi=300, bbox_inches="tight")
 
 # Figure 2: Path Reward (Box Plot)
@@ -132,7 +131,6 @@ for i, method in enumerate(methods_by_reward):
     ax.text(i, 0.95, f'{mean_val:.3f}', ha='center', va='top', fontsize=8)
 
 plt.tight_layout()
-fig2.savefig(os.path.join(run_dir, 'figure2_path_reward.pdf'), dpi=300, bbox_inches='tight')
 fig2.savefig(os.path.join(run_dir, 'figure2_path_reward.png'), dpi=300, bbox_inches='tight')
 
 # Generate comparison table
@@ -178,12 +176,11 @@ ax.legend()
 ax.grid(axis='y', alpha=0.3)
 
 plt.tight_layout()
-fig3.savefig(os.path.join(run_dir, 'figure3_probe_breakdown.pdf'), dpi=300, bbox_inches='tight')
 fig3.savefig(os.path.join(run_dir, 'figure3_probe_breakdown.png'), dpi=300, bbox_inches='tight')
 
 print(f"\nFigures saved to {run_dir}/")
-print("  - figure1_probe_overhead.pdf/png: Probe overhead and selection time")
-print("  - figure2_path_reward.pdf/png: Path reward distribution")
-print("  - figure3_probe_breakdown.pdf/png: Probe type breakdown")
+print("  - figure1_probe_overhead.png: Probe overhead and selection time")
+print("  - figure2_path_reward.png: Path reward distribution")
+print("  - figure3_probe_breakdown.png: Probe type breakdown")
 
 plt.close('all')

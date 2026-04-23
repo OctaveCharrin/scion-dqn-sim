@@ -168,51 +168,22 @@ def run_brite(config_path: Path, output_stem: Path,
     return out_file
 
 
-try:
-    from src.topology.brite_wrapper import BRITEWrapper
+class BRITERunner:
+    """Run BRITE via the bundled JAR (Main.Brite requires config, output stem, seed file)."""
 
-    class BRITERunner(BRITEWrapper):
-        """Extended BRITE runner with parallel execution support."""
+    def __init__(self, brite_path: Optional[Path] = None):
+        self.brite_path = Path(brite_path or "external/brite")
 
-        def run_parallel(self, config_files: list, output_dir: Path, n_jobs: int = -1):
-            from joblib import Parallel, delayed
-            import multiprocessing
-
-            if n_jobs == -1:
-                n_jobs = multiprocessing.cpu_count()
-
-            def run_single(config_path, output_dir):
-                output_name = Path(config_path).stem
-                return self.generate_topology(
-                    n_nodes=None,
-                    model_type=None,
-                    output_dir=output_dir,
-                    output_name=output_name,
-                    config_file=str(config_path),
-                )
-
-            return Parallel(n_jobs=n_jobs)(
-                delayed(run_single)(cfg, output_dir) for cfg in config_files
+    def run_parallel(
+        self, config_files: List[Path], output_dir: Path, n_jobs: int = -1
+    ) -> List[Path]:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return [
+            run_brite(
+                Path(cfg).resolve(),
+                (output_dir / Path(cfg).stem).resolve(),
+                brite_path=self.brite_path,
             )
-
-except ImportError:
-
-    class BRITERunner:
-        """Run BRITE via the bundled JAR (Main.Brite requires config, output stem, seed file)."""
-
-        def __init__(self, brite_path: Optional[Path] = None):
-            self.brite_path = Path(brite_path or "external/brite")
-
-        def run_parallel(
-            self, config_files: List[Path], output_dir: Path, n_jobs: int = -1
-        ) -> List[Path]:
-            output_dir = Path(output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            return [
-                run_brite(
-                    Path(cfg).resolve(),
-                    (output_dir / Path(cfg).stem).resolve(),
-                    brite_path=self.brite_path,
-                )
-                for cfg in config_files
-            ]
+            for cfg in config_files
+        ]
