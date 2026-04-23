@@ -6,33 +6,37 @@ Note: This is a work in progress and some components are not yet fully implement
 
 ## Features
 
-- **BRITE-based Topology Generation**: Create realistic AS-level SCION topologies
-- **Full SCION Control Plane Simulation**: Beaconing, path discovery, and segment registration
-- **Traffic Simulation**: Gravity and uniform traffic models with diurnal patterns
-- **Deep Reinforcement Learning**: DQN agent for intelligent path selection
-- **Performance Metrics**: Metrics collection and visualization
-- **Selective Probing**: DQN-based intelligent path probing to reduce overhead
-- **Baseline Comparisons**: Compare DQN against shortest path, widest path, lowest latency, ECMP, random, and SCION default selectors
+- **BRITE-based topology generation**: AS-level SCION-style graphs from the BRITE Java generator
+- **Control-plane style beaconing**: Beacon simulation and path enumeration for evaluation runs
+- **Traffic simulation**: 28 days of hourly flows with diurnal and weekly patterns
+- **Deep reinforcement learning**: DQN training with selective probing
+- **Performance metrics and figures**: Method comparison and Matplotlib exports (PNG)
+- **Baseline comparisons**: Shortest path, widest path, lowest latency, ECMP, random, and SCION default selectors
+- **Topology visualization**: Full dashboard or geographic map from `scion_topology.json` (or topology pickle)
 
 ## Installation
 
 1. Clone the repository with submodules:
+
 ```bash
 git clone --recursive https://github.com/netsys-lab/scion-dqn-sim.git
-cd my-scion-dqn-sim
+cd scion-dqn-sim
 ```
 
 Or if you already cloned without submodules:
+
 ```bash
 git submodule update --init --recursive
 ```
 
-2. Set up BRITE topology generator:
+2. Set up the BRITE topology generator:
+
 ```bash
 ./setup_brite.sh
 ```
 
-3. Install Python tooling with [uv](https://docs.astral.sh/uv/) and sync dependencies (creates `.venv` and installs the package in editable mode):
+3. Install Python tooling with [uv](https://docs.astral.sh/uv/) and sync dependencies (creates `.venv` and installs the package in editable mode, including dev tools such as pytest):
+
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh   # or use your OS package manager
 uv sync --extra dev
@@ -42,107 +46,150 @@ Use `uv run python ...` or `source .venv/bin/activate` so scripts use the projec
 
 The legacy `requirements.txt` is kept in sync with `pyproject.toml` for reference; prefer `uv sync` for installs.
 
-## Quick Start
+## Quick start
 
-### Running the Complete Evaluation Pipeline
+### Complete evaluation pipeline
 
-The evaluation pipeline compares DQN-based path selection with baseline methods (shortest path, widest path, lowest latency, ECMP, random, SCION default) on SCION networks.
+The evaluation pipeline compares DQN-based path selection with the baseline methods on topologies produced in `evaluation/`.
 
-**Run the complete evaluation:**
+**Run all six steps** (creates a new `evaluation/run_YYYYMMDD_HHMMSS/` directory):
 
 ```bash
 cd evaluation
 uv run python run_full_evaluation.py
 ```
 
-or
+**Reuse an existing run directory** (re-runs every step into the same folder; overwrite previous artifacts):
 
 ```bash
 cd evaluation
-uv run python run_full_evaluation_2.py
+uv run python run_full_evaluation.py --run-dir run_20260101_120000
 ```
 
-This will execute the complete 6-step pipeline:
-1. **Generate Topology**: Creates a dense SCION topology using BRITE
-2. **Run Beaconing**: Simulates SCION beaconing to discover paths between ASes
-3. **Simulate Traffic**: Generates 28 days of traffic with diurnal and weekly patterns
-4. **Train DQN**: Trains the DQN agent on the first 14 days of traffic
-5. **Evaluate Methods**: Compares all methods on the last 14 days of traffic
-6. **Generate Figures**: Creates visualization figures comparing performance
+The orchestrator and numbered scripts share helpers in **`evaluation/_common.py`** (run-directory resolution, subprocess runner, figure styling metadata for step 06).
 
-**Key Features:**
-- **Selective Probing**: DQN only probes selected paths while baseline methods must probe all paths
-- **Differentiated Probe Costs**: Latency probes (10ms) vs bandwidth probes (100ms)
-- **Realistic Traffic**: Diurnal and weekly patterns with gravity and uniform models
-- **Fair Comparison**: All methods evaluated on the same traffic flows
+**Steps executed:**
 
-**Outputs:**
-All results are saved in a timestamped run directory (e.g., `run_20250805_071054/`):
-- `scion_topology.json`: Network topology
-- `selected_pair.json`: Source-destination AS pair used for evaluation
-- `dqn_model.pth`: Trained DQN model
-- `evaluation_results.json`: Performance comparison metrics
-- `figure1_probe_overhead.pdf`: Probe overhead comparison
-- `figure2_path_reward.pdf`: Path reward distribution
-- `figure3_probe_breakdown.pdf`: Probe type breakdown
+1. **`01_generate_topology.py`** — BRITE config, JAR run, SCION JSON + pickle (`scion_topology.json`).
+2. **`02_run_beaconing.py`** — Beacon simulation input + path store + selected AS pair.
+3. **`03_simulate_traffic.py`** — 28 days of traffic + per-hour link states.
+4. **`04_train_dqn.py`** — DQN training on the first 14 days.
+5. **`05_evaluate_methods.py`** — Baselines + DQN on the last 14 days.
+6. **`06_generate_figures.py`** — Comparison figures as **PNG** (and the same plots used in the paper-style layout; PDF is not required for the default pipeline).
 
-### Running Individual Steps
+**Faster / toy BRITE size** (optional): large topologies take longer in step 1. For a smoke test, set the node count before step 1 (or before the full orchestrator, since step 1 reads this variable):
 
-You can also run individual steps manually:
+```bash
+cd evaluation
+EVAL_BRITE_N_NODES=45 uv run python run_full_evaluation.py
+```
+
+**Typical outputs** (under the run directory):
+
+| File | Description |
+|------|-------------|
+| `scion_topology.json` / `scion_topology.pkl` | Topology |
+| `path_store.pkl`, `selected_pair.json` | Paths and evaluation pair |
+| `traffic_flows.pkl`, `link_states.pkl` | Traffic and link dynamics |
+| `dqn_model.pth`, `training_stats.json` | Trained agent and training log |
+| `evaluation_results.json` | Metrics for all methods |
+| `figure1_probe_overhead.png`, `figure2_path_reward.png`, `figure3_probe_breakdown.png` | Result figures |
+
+### Individual steps
+
+Each numbered script accepts the run directory as **`argv[1]`**, or picks the lexicographically latest `run_*` in the current working directory (when you `cd evaluation`, that is usually the latest evaluation run).
 
 ```bash
 cd evaluation
 
-# Create a run directory
-mkdir -p run_YYYYMMDD_HHMMSS
+mkdir -p run_YYYYMMDD_HHMMSS   # optional if 01 creates the dir when invoked without argv
 
-# Step 1: Generate topology
 uv run python 01_generate_topology.py run_YYYYMMDD_HHMMSS
-
-# Step 2: Run beaconing
 uv run python 02_run_beaconing.py run_YYYYMMDD_HHMMSS
-
-# Step 3: Simulate traffic
 uv run python 03_simulate_traffic.py run_YYYYMMDD_HHMMSS
-
-# Step 4: Train DQN
 uv run python 04_train_dqn.py run_YYYYMMDD_HHMMSS
-
-# Step 5: Evaluate methods
 uv run python 05_evaluate_methods.py run_YYYYMMDD_HHMMSS
-
-# Step 6: Generate figures
 uv run python 06_generate_figures.py run_YYYYMMDD_HHMMSS
 ```
 
-### Evaluation Metrics
+### Topology maps (optional)
 
-The evaluation compares the following metrics across all path selection methods:
+After a run has `scion_topology.json` (or `scion_topology.pkl`), generate **topology figures** with **`evaluation/visualize_topology.py`**:
 
-- **Reward**: Composite metric combining goodput, latency, and loss rate
-- **Latency**: Path latency in milliseconds (mean, p50, p95)
-- **Bandwidth**: Available bandwidth in Mbps
-- **Probe Overhead**: Number and time cost of latency/bandwidth probes
-  - Latency probes: 10ms base cost + 0.5ms per hop
-  - Bandwidth probes: 100ms base cost + 20ms per hop
-- **Selection Time**: Time taken to select a path
-- **Probe Reduction**: Percentage reduction in probe overhead compared to baseline methods
+```bash
+cd evaluation
 
-The DQN agent uses **selective probing** - it only probes the path it intends to select, while baseline methods must probe all available paths before making a decision. This results in significant probe overhead reduction while maintaining competitive performance.
+# Full dashboard: main geographic map + degree / ISD / link-type panels, plus extra PNGs
+uv run python visualize_topology.py run_YYYYMMDD_HHMMSS --mode full --report
 
-### Programmatic Usage
+# Single geographic map with AS-role and link-type legends
+uv run python visualize_topology.py --mode simple
 
-You can also use the simulator programmatically:
+# Explicit JSON path and output directory
+uv run python visualize_topology.py -t run_YYYYMMDD_HHMMSS/scion_topology.json -o ./figures --mode full
+```
+
+- **`--mode full`** (default): writes **`topology_dashboard.png`**, and unless **`--no-extras`** is set, also **`isd_map.png`**, **`core_network.png`**, **`connectivity_matrix.png`** in the same folder as the dashboard.
+- **`--mode simple`**: writes **`topology_geographic.png`** (one figure, legends, all AS–AS links in an undirected view).
+- **`--report`**: writes **`topology_stats.txt`** (counts, link mix, connectivity).
+- **`-o`**: if the path does not end with **`.png`**, it is treated as an **output directory** (appropriate files are created inside).
+
+Implementation lives in **`src/visualization/topology_visualizer.py`** (pickle and JSON inputs, shared drawing logic).
+
+### Tests
+
+From the repository root:
+
+```bash
+uv run python -m pytest
+```
+
+Tests live under **`tests/`** and are configured via **`[tool.pytest.ini_options]`** in **`pyproject.toml`**. They cover topology config, traffic and link helpers, path metrics, the in-memory path store, baselines, the DQN agent smoke path, evaluation helpers, and topology plotting.
+
+### Evaluation metrics
+
+The evaluation step compares:
+
+- **Reward**: Composite metric combining goodput, latency, and loss
+- **Latency**: Mean and percentiles (ms)
+- **Bandwidth**: Mbps
+- **Probe overhead**: Count and time cost of latency vs bandwidth probes  
+  - Latency probes: 10 ms base + 0.5 ms per hop  
+  - Bandwidth probes: 100 ms base + 20 ms per hop
+- **Selection time**: Wall-clock time to choose a path in the simulator loop
+- **Probe reduction**: DQN vs average baseline probe load
+
+The DQN uses **selective probing** (probing tied to the chosen path), while the scripted baselines probe according to each method’s needs in **`05_evaluate_methods.py`**.
+
+### Programmatic examples
+
+**BRITE configuration file:**
 
 ```python
-from src.topology import SCIONTopologyGenerator
+from pathlib import Path
+from src.topology.brite_cfg_gen import BRITEConfigGenerator
 
-generator = SCIONTopologyGenerator()
-result = generator.generate(
-    num_ases=100,
-    num_isds=3,
-    topology_type='medium',
-    seed=42
+gen = BRITEConfigGenerator()
+gen.generate(Path("out.conf"), n_nodes=50, seed=42)
+```
+
+**Render a topology JSON to PNG:**
+
+```python
+from pathlib import Path
+from src.visualization.topology_visualizer import render_scion_topology_png, TopologyVisualizer
+
+render_scion_topology_png(
+    Path("evaluation/run_YYYYMMDD_HHMMSS/scion_topology.json"),
+    Path("topology_export.png"),
+    dpi=200,
+)
+
+# Or the full dashboard + extras:
+TopologyVisualizer().visualize_topology(
+    Path("evaluation/run_YYYYMMDD_HHMMSS/scion_topology.json"),
+    Path("out/topology_dashboard.png"),
 )
 ```
 
+For a deeper file-by-file overview of the repository, see **`WALKTHROUGH.md`**.

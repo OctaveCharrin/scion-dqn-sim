@@ -55,9 +55,9 @@ def main() -> None:
         ("selected_pair.json", "Source-destination pair"),
         ("dqn_model.pth", "Trained DQN model"),
         ("evaluation_results.json", "Performance comparison"),
-        ("figure1_probe_overhead.pdf", "Probe overhead comparison"),
-        ("figure2_path_reward.pdf", "Path reward distribution"),
-        ("figure3_probe_breakdown.pdf", "Probe type breakdown"),
+        ("figure1_probe_overhead.png", "Probe overhead comparison"),
+        ("figure2_path_reward.png", "Path reward distribution"),
+        ("figure3_probe_breakdown.png", "Probe type breakdown"),
     ]:
         print(f"  - {run_dir}/{name}: {desc}")
 
