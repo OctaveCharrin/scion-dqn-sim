@@ -7,12 +7,11 @@ small and declarative.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 # Ensure the repo root is importable so scripts can ``from src.<x> import ...``
 # regardless of where they are invoked from.
@@ -37,10 +36,13 @@ def topology_dir(run_dir: str | Path) -> Path:
 # Run directory
 # -----------------------------------------------------------------------------
 
-def resolve_run_dir(argv: Optional[Sequence[str]] = None,
-                    *,
-                    cwd: Optional[Path] = None,
-                    must_exist: bool = True) -> str:
+
+def resolve_run_dir(
+    argv: Optional[Sequence[str]] = None,
+    *,
+    cwd: Optional[Path] = None,
+    must_exist: bool = True,
+) -> str:
     """Resolve a ``run_*`` directory from argv or the most recent run in ``cwd``.
 
     Parameters
@@ -57,8 +59,11 @@ def resolve_run_dir(argv: Optional[Sequence[str]] = None,
         run_dir = argv[1]
     else:
         search_dir = Path(cwd) if cwd else Path.cwd()
-        dirs = sorted(d.name for d in search_dir.iterdir()
-                      if d.is_dir() and d.name.startswith("run_"))
+        dirs = sorted(
+            d.name
+            for d in search_dir.iterdir()
+            if d.is_dir() and d.name.startswith("run_")
+        )
         if not dirs:
             if must_exist:
                 raise FileNotFoundError(
@@ -75,9 +80,14 @@ def resolve_run_dir(argv: Optional[Sequence[str]] = None,
 # Pipeline runner
 # -----------------------------------------------------------------------------
 
-def run_script(script_name: str, run_dir: Optional[str] = None, *,
-               cwd: Optional[Path] = None,
-               extra_args: Optional[list[str]] = None) -> str:
+
+def run_script(
+    script_name: str,
+    run_dir: Optional[str] = None,
+    *,
+    cwd: Optional[Path] = None,
+    extra_args: Optional[list[str]] = None,
+) -> str:
     """Execute a numbered pipeline script and print its output.
 
     Exits with status 1 if the script fails.

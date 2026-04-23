@@ -114,8 +114,9 @@ class BRITEConfigGenerator:
         return "\n".join(lines)
 
 
-def run_brite(config_path: Path, output_stem: Path,
-              brite_path: Optional[Path] = None) -> Path:
+def run_brite(
+    config_path: Path, output_stem: Path, brite_path: Optional[Path] = None
+) -> Path:
     """Invoke the BRITE Java generator and return the produced ``.brite`` file.
 
     ``output_stem`` must NOT include the ``.brite`` suffix — BRITE adds it.
@@ -133,9 +134,7 @@ def run_brite(config_path: Path, output_stem: Path,
     jar = brite_path / "Java" / "Brite.jar"
     seed = brite_path / "Java" / "seed_file"
     if not jar.is_file():
-        raise FileNotFoundError(
-            f"BRITE jar missing: {jar} (run ./setup_brite.sh)"
-        )
+        raise FileNotFoundError(f"BRITE jar missing: {jar} (run ./setup_brite.sh)")
     if not seed.is_file():
         raise FileNotFoundError(f"BRITE seed file missing: {seed}")
 
@@ -164,7 +163,9 @@ def run_brite(config_path: Path, output_stem: Path,
 
     out_file = Path(str(stem_abs) + ".brite")
     if not out_file.is_file():
-        raise RuntimeError(f"BRITE did not create expected file: {out_file}\n{combined}")
+        raise RuntimeError(
+            f"BRITE did not create expected file: {out_file}\n{combined}"
+        )
     return out_file
 
 

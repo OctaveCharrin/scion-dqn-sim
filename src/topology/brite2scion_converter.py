@@ -8,21 +8,18 @@ Converts BRITE topologies to SCION format with:
 - Interface ID management
 """
 
-import numpy as np
-import pandas as pd
-import networkx as nx
 from pathlib import Path
 from typing import Dict, Optional, Set, Tuple
+
+import networkx as nx
+import numpy as np
 from sklearn.cluster import KMeans
-import pickle
 
 
 class BRITE2SCIONConverter:
     """Convert BRITE topologies to SCION format"""
-    
-    def __init__(self, 
-                 n_isds: int = 3,
-                 core_ratio: float = 0.075):
+
+    def __init__(self, n_isds: int = 3, core_ratio: float = 0.075):
         """
         Args:
             n_isds: Number of ISDs to create (automatically reduced to 1 for topologies < 200 ASes)
@@ -32,7 +29,6 @@ class BRITE2SCIONConverter:
         self.original_n_isds = n_isds  # Store original value
         # Bound core_ratio to 5-10%
         self.core_ratio = max(0.05, min(0.10, core_ratio))
-        
 
     def convert_brite_file(
         self,
@@ -68,16 +64,9 @@ class BRITE2SCIONConverter:
                 "Step 1: Vanilla BRITE (layout + physical edges)",
             )
 
-        topology_size = len(G.nodes())
-        if topology_size < 200:
-            self.n_isds = 1
-            print(f"Topology has {topology_size} ASes (< 200), using 1 ISD")
-        else:
-            print(f"Topology has {topology_size} ASes (>= 200), using {self.n_isds} ISDs")
-
         isd_assignment = self._assign_isds(G, node_attrs)
         core_ases = self._select_core_ases(G, isd_assignment)
-        self._ensure_core_connectivity(G, core_ases)
+        self._ensure_core_connectivity(G, core_ases, isd_assignment)
         self._ensure_multi_parent_connectivity(G, core_ases, isd_assignment)
         self._add_dense_connections(G, core_ases, isd_assignment)
         link_types = self._classify_links(G, core_ases, isd_assignment)
@@ -153,17 +142,24 @@ class BRITE2SCIONConverter:
         interface_id = 1000
         added = 0
         attempts = 0
-        max_attempts = max(2000, cap * 200)
+        max_attempts = max(10000, cap * 500)
         while added < cap and attempts < max_attempts:
             attempts += 1
             src, dst = int(rng.choice(nodes)), int(rng.choice(nodes))
-            if src == dst:
+            if src == dst or G.has_edge(src, dst):
                 continue
-            if G.has_edge(src, dst):
+
+            # SCION Reality: Peering usually happens between geographically close ASes (IXPs / local colos).
+            # Instead of uniformly random peering, we use exponential decay based on distance.
+            pos1 = (G.nodes[src].get("x", 0), G.nodes[src].get("y", 0))
+            pos2 = (G.nodes[dst].get("x", 0), G.nodes[dst].get("y", 0))
+            geo_dist = np.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
+
+            # Acceptance probability heavily favors closer nodes
+            prob = np.exp(-geo_dist / 250.0)
+            if rng.random() > prob:
                 continue
-            if G.nodes[src].get("isd") == G.nodes[dst].get("isd"):
-                if rng.random() > 0.3:
-                    continue
+
             G.add_edge(
                 src,
                 dst,
@@ -274,16 +270,16 @@ class BRITE2SCIONConverter:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor="white")
         plt.close(fig)
-    
+
     def _read_brite_edges(self, brite_file: Path) -> Tuple[nx.Graph, Dict]:
         """Read BRITE topology file (BriteExport format) and extract node positions and edges."""
         G = nx.Graph()
         node_attrs: Dict[int, Dict[str, float]] = {}
-        
+
         with open(brite_file) as f:
             in_nodes = False
             in_edges = False
-            
+
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#"):
@@ -299,7 +295,7 @@ class BRITE2SCIONConverter:
                     in_nodes = False
                     in_edges = True
                     continue
-                    
+
                 if in_nodes:
                     parts = line.split("\t") if "\t" in line else line.split()
                     if len(parts) >= 3:
@@ -308,7 +304,7 @@ class BRITE2SCIONConverter:
                         y = float(parts[2])
                         node_attrs[node_id] = {"x": x, "y": y}
                         G.add_node(node_id)
-                        
+
                 elif in_edges:
                     parts = line.split("\t") if "\t" in line else line.split()
                     if len(parts) >= 6:
@@ -318,161 +314,186 @@ class BRITE2SCIONConverter:
                         delay = float(parts[4])
                         bw = float(parts[5])
                         G.add_edge(u, v, bandwidth=bw, delay=delay, length=dist)
-        
+
         return G, node_attrs
-    
+
     def _assign_isds(self, G: nx.Graph, node_attrs: Dict) -> Dict[int, int]:
         """Assign nodes to ISDs using k-means on geographic coordinates"""
         nodes = sorted(G.nodes())
-        
+
         # Special case: if only 1 ISD, assign all nodes to ISD 0
         if self.n_isds == 1:
             return {node: 0 for node in nodes}
-        
+
         # Otherwise, use k-means clustering
-        coords = np.array([[node_attrs[n]['x'], node_attrs[n]['y']] for n in nodes])
-        
+        coords = np.array([[node_attrs[n]["x"], node_attrs[n]["y"]] for n in nodes])
+
         kmeans = KMeans(n_clusters=self.n_isds, random_state=42)
         labels = kmeans.fit_predict(coords)
-        
+
         return {node: int(label) for node, label in zip(nodes, labels)}
-    
+
     def _select_core_ases(self, G: nx.Graph, isd_assignment: Dict) -> set:
         """Select core ASes based on degree centrality per ISD (5-10% of ASes per ISD)"""
         core_ases = set()
-        
+
         # Group nodes by ISD
         isd_nodes = {}
         for node, isd in isd_assignment.items():
             if isd not in isd_nodes:
                 isd_nodes[isd] = []
             isd_nodes[isd].append(node)
-        
+
         # Select top degree nodes per ISD
         for isd, nodes in isd_nodes.items():
             subgraph = G.subgraph(nodes)
             degrees = dict(subgraph.degree())
-            
+
             # Calculate number of core ASes (5-10% of ASes in this ISD)
             n_core = max(1, int(len(nodes) * self.core_ratio))
-            
+
             # Ensure we don't exceed 10% even with rounding
             max_core = max(1, int(len(nodes) * 0.10))
             n_core = min(n_core, max_core)
-            
+
             # Sort by degree and select top nodes
             sorted_nodes = sorted(nodes, key=lambda n: degrees[n], reverse=True)
             selected_core = sorted_nodes[:n_core]
             core_ases.update(selected_core)
-            
-            print(f"  ISD {isd}: {len(nodes)} ASes, {n_core} core ASes ({n_core/len(nodes)*100:.1f}%)")
-            
+
+            print(
+                f"  ISD {isd}: {len(nodes)} ASes, {n_core} core ASes ({n_core / len(nodes) * 100:.1f}%)"
+            )
+
         return core_ases
-    
-    def _ensure_core_connectivity(self, G: nx.Graph, core_ases: set):
-        """Ensure core ASes form a connected subgraph by adding virtual links if needed"""
-        core_list = list(core_ases)
-        n_cores = len(core_list)
-        
-        if n_cores <= 1:
-            return
-            
-        # Check existing core connectivity
-        core_subgraph = G.subgraph(core_list)
-        
-        # Ensure full mesh connectivity for small number of cores
-        if n_cores <= 5:
-            print("  Ensuring full mesh core connectivity...")
+
+    def _ensure_core_connectivity(
+        self, G: nx.Graph, core_ases: set, isd_assignment: Dict
+    ):
+        """Ensure core ASes form a connected subgraph per ISD, and connect ISDs globally."""
+        isd_cores = {}
+        for node in core_ases:
+            isd = isd_assignment[node]
+            if isd not in isd_cores:
+                isd_cores[isd] = []
+            isd_cores[isd].append(node)
+
+        # 1. Intra-ISD Core Connectivity (Full mesh per ISD is standard for SCION)
+        for isd, cores in isd_cores.items():
+            print(f"  Ensuring core connectivity for ISD {isd}...")
             added = 0
+            n_cores = len(cores)
             for i in range(n_cores):
                 for j in range(i + 1, n_cores):
-                    u = core_list[i]
-                    v = core_list[j]
-                    
+                    u = cores[i]
+                    v = cores[j]
                     if not G.has_edge(u, v):
-                        # Add virtual core link with high bandwidth and low latency
+                        # Add intra-ISD core link
                         G.add_edge(u, v, bandwidth=100000.0, virtual=True)
-                        print(f"    Added virtual core link: {u} <-> {v}")
+                        print(f"    Added intra-ISD core link: {u} <-> {v}")
                         added += 1
-            
             if added == 0:
                 print("    Core ASes already fully connected")
-        
-        # Skip the aggressive multi-core connectivity to preserve hierarchy
-        # Path diversity will come from multi-parent connections instead
-        
-        # For larger number of cores, ensure basic connectivity
-        if n_cores > 5:
-            if not nx.is_connected(core_subgraph):
-                print("  Adding virtual core links to ensure connectivity...")
-                # Create a ring topology for core ASes
-                for i in range(n_cores):
-                    u = core_list[i]
-                    v = core_list[(i + 1) % n_cores]
-                    
+
+        # 2. Inter-ISD Core Connectivity (Global TRC connectivity)
+        isds = sorted(list(isd_cores.keys()))
+        if len(isds) > 1:
+            print("  Ensuring inter-ISD core connectivity...")
+            for i in range(len(isds)):
+                isd_a = isds[i]
+                isd_b = isds[(i + 1) % len(isds)]
+
+                # Find closest pair of cores between isd_a and isd_b for realistic linkage
+                best_pair = None
+                min_dist = float("inf")
+                for u in isd_cores[isd_a]:
+                    for v in isd_cores[isd_b]:
+                        u_pos = (G.nodes[u].get("x", 0), G.nodes[u].get("y", 0))
+                        v_pos = (G.nodes[v].get("x", 0), G.nodes[v].get("y", 0))
+                        dist = (u_pos[0] - v_pos[0]) ** 2 + (u_pos[1] - v_pos[1]) ** 2
+                        if dist < min_dist:
+                            min_dist = dist
+                            best_pair = (u, v)
+
+                if best_pair:
+                    u, v = best_pair
                     if not G.has_edge(u, v):
-                        # Add virtual core link with high bandwidth and low latency
-                        G.add_edge(u, v, bandwidth=100000.0, virtual=True)
-                        print(f"    Added virtual core link: {u} <-> {v}")
-    
-    def _ensure_multi_parent_connectivity(self, G: nx.Graph, core_ases: set, 
-                                        isd_assignment: Dict):
+                        G.add_edge(u, v, bandwidth=50000.0, virtual=True)
+                        print(f"    Added inter-ISD core link: {u} <-> {v}")
+
+    def _ensure_multi_parent_connectivity(
+        self, G: nx.Graph, core_ases: set, isd_assignment: Dict
+    ):
         """Ensure more ASes have multiple parents for better path diversity"""
         print("  Ensuring multi-parent connectivity for path diversity...")
-        
+
         # Group nodes by ISD
         isd_nodes = {}
         for node, isd in isd_assignment.items():
             if isd not in isd_nodes:
                 isd_nodes[isd] = []
             isd_nodes[isd].append(node)
-        
+
         added_connections = 0
-        
+
         for isd, nodes in isd_nodes.items():
             # Get core and non-core ASes in this ISD
             isd_cores = [n for n in nodes if n in core_ases]
             non_cores = [n for n in nodes if n not in core_ases]
-            
+
             if not isd_cores or not non_cores:
                 continue
-            
+
             # For each non-core AS, check parent connectivity
             for node in non_cores:
                 # Find current distance to nearest core
-                dist_to_core = self._distance_to_core(node, G, core_ases, isd_assignment, isd)
-                
+                dist_to_core = self._distance_to_core(
+                    node, G, core_ases, isd_assignment, isd
+                )
+
                 if dist_to_core > 2:  # Far from core, needs better connectivity
                     # Find potential parents (ASes closer to core)
                     potential_parents = []
-                    
+
                     for other in nodes:
                         if other == node or other in core_ases:
                             continue
-                            
-                        other_dist = self._distance_to_core(other, G, core_ases, isd_assignment, isd)
-                        if other_dist < dist_to_core - 1:  # Significantly closer to core
+
+                        other_dist = self._distance_to_core(
+                            other, G, core_ases, isd_assignment, isd
+                        )
+                        if (
+                            other_dist < dist_to_core - 1
+                        ):  # Significantly closer to core
                             # Check if not already connected
                             if not G.has_edge(node, other):
                                 potential_parents.append((other, other_dist))
-                    
+
                     # Sort by distance to core
                     potential_parents.sort(key=lambda x: x[1])
-                    
+
                     # Add connections to 1-2 closest potential parents
                     for i, (parent, _) in enumerate(potential_parents[:2]):
                         # Calculate geographic distance
-                        node_pos = (G.nodes[node].get('x', 0), G.nodes[node].get('y', 0))
-                        parent_pos = (G.nodes[parent].get('x', 0), G.nodes[parent].get('y', 0))
-                        geo_dist = np.sqrt((node_pos[0] - parent_pos[0])**2 + 
-                                         (node_pos[1] - parent_pos[1])**2)
-                        
+                        node_pos = (
+                            G.nodes[node].get("x", 0),
+                            G.nodes[node].get("y", 0),
+                        )
+                        parent_pos = (
+                            G.nodes[parent].get("x", 0),
+                            G.nodes[parent].get("y", 0),
+                        )
+                        geo_dist = np.sqrt(
+                            (node_pos[0] - parent_pos[0]) ** 2
+                            + (node_pos[1] - parent_pos[1]) ** 2
+                        )
+
                         # Only add if geographically reasonable
                         if geo_dist < 400:  # Reasonable distance threshold
                             G.add_edge(node, parent, bandwidth=1000.0, virtual=True)
                             added_connections += 1
                             print(f"    Added multi-parent link: {node} -> {parent}")
-                
+
                 # Also ensure ASes at distance 1 and 2 have multiple paths
                 elif dist_to_core in [1, 2]:
                     # Count current parents (including direct core connections)
@@ -481,10 +502,12 @@ class BRITE2SCIONConverter:
                         if neighbor in core_ases:
                             parents.append(neighbor)
                         else:
-                            neighbor_dist = self._distance_to_core(neighbor, G, core_ases, isd_assignment, isd)
+                            neighbor_dist = self._distance_to_core(
+                                neighbor, G, core_ases, isd_assignment, isd
+                            )
                             if neighbor_dist < dist_to_core:
                                 parents.append(neighbor)
-                    
+
                     # Add more parents - target based on topology size
                     if len(nodes) < 30:
                         target_parents = 2  # For small topologies
@@ -493,218 +516,263 @@ class BRITE2SCIONConverter:
                     if len(parents) < target_parents:
                         # Find other ASes at same or closer distance
                         candidates = []
-                        
+
                         for other in nodes:
                             if other == node or other in parents:
                                 continue
-                            
+
                             # Include cores and ASes closer to core
                             if other in core_ases:
                                 other_dist = 0
                             else:
-                                other_dist = self._distance_to_core(other, G, core_ases, isd_assignment, isd)
-                            
-                            if other_dist < dist_to_core and not G.has_edge(node, other):
+                                other_dist = self._distance_to_core(
+                                    other, G, core_ases, isd_assignment, isd
+                                )
+
+                            if other_dist < dist_to_core and not G.has_edge(
+                                node, other
+                            ):
                                 # Check geographic distance
-                                node_pos = (G.nodes[node].get('x', 0), G.nodes[node].get('y', 0))
-                                other_pos = (G.nodes[other].get('x', 0), G.nodes[other].get('y', 0))
-                                geo_dist = np.sqrt((node_pos[0] - other_pos[0])**2 + 
-                                                 (node_pos[1] - other_pos[1])**2)
-                                
+                                node_pos = (
+                                    G.nodes[node].get("x", 0),
+                                    G.nodes[node].get("y", 0),
+                                )
+                                other_pos = (
+                                    G.nodes[other].get("x", 0),
+                                    G.nodes[other].get("y", 0),
+                                )
+                                geo_dist = np.sqrt(
+                                    (node_pos[0] - other_pos[0]) ** 2
+                                    + (node_pos[1] - other_pos[1]) ** 2
+                                )
+
                                 candidates.append((other, other_dist, geo_dist))
-                        
+
                         # Sort by distance to core, then geographic distance
                         candidates.sort(key=lambda x: (x[1], x[2]))
-                        
+
                         # Add connections to multiple candidates
-                        parents_to_add = min(target_parents - len(parents), len(candidates))
+                        parents_to_add = min(
+                            target_parents - len(parents), len(candidates)
+                        )
                         for i in range(parents_to_add):
-                            if candidates[i][2] < 500:  # Increased geographic distance threshold
+                            if (
+                                candidates[i][2] < 500
+                            ):  # Increased geographic distance threshold
                                 best = candidates[i][0]
                                 G.add_edge(node, best, bandwidth=2000.0, virtual=True)
                                 added_connections += 1
-                                print(f"    Added parent {len(parents) + i + 1}: {node} -> {best}")
-        
+                                print(
+                                    f"    Added parent {len(parents) + i + 1}: {node} -> {best}"
+                                )
+
         print(f"    Total multi-parent connections added: {added_connections}")
-    
-    def _add_dense_connections(self, G: nx.Graph, core_ases: set,
-                               isd_assignment: Dict) -> None:
+
+    def _add_dense_connections(
+        self, G: nx.Graph, core_ases: set, isd_assignment: Dict
+    ) -> None:
         """Add additional cross-connections for dense topology with many paths"""
         print("  Adding dense cross-connections...")
         added_connections = 0
-        
+
         # Group ASes by ISD and distance from core
         as_by_distance = {}
         for isd_id in set(isd_assignment.values()):
             as_by_distance[isd_id] = {}
-            
+
             for as_id, isd in isd_assignment.items():
                 if isd != isd_id:
                     continue
-                    
-                dist = self._distance_to_core(as_id, G, core_ases, isd_assignment, isd_id)
+
+                dist = self._distance_to_core(
+                    as_id, G, core_ases, isd_assignment, isd_id
+                )
                 if dist not in as_by_distance[isd_id]:
                     as_by_distance[isd_id][dist] = []
                 as_by_distance[isd_id][dist].append(as_id)
-        
+
         # Add cross-connections between ASes at the same level
         for isd_id, distance_groups in as_by_distance.items():
             for dist, ases in distance_groups.items():
                 if dist == 0:  # Skip core ASes
                     continue
-                    
+
                 # Connect ASes at same distance with some probability
                 for i, as1 in enumerate(ases):
-                    for j, as2 in enumerate(ases[i+1:], i+1):
+                    for j, as2 in enumerate(ases[i + 1 :], i + 1):
                         if not G.has_edge(as1, as2):
                             # Check geographic distance
-                            pos1 = (G.nodes[as1].get('x', 0), G.nodes[as1].get('y', 0))
-                            pos2 = (G.nodes[as2].get('x', 0), G.nodes[as2].get('y', 0))
-                            geo_dist = np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
-                            
+                            pos1 = (G.nodes[as1].get("x", 0), G.nodes[as1].get("y", 0))
+                            pos2 = (G.nodes[as2].get("x", 0), G.nodes[as2].get("y", 0))
+                            geo_dist = np.sqrt(
+                                (pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2
+                            )
+
                             # Add connection with probability based on distance
                             if geo_dist < 200 and np.random.random() < 0.15:
-                                G.add_edge(as1, as2, bandwidth=1000.0, virtual=True, cross_connect=True)
+                                G.add_edge(
+                                    as1,
+                                    as2,
+                                    bandwidth=1000.0,
+                                    virtual=True,
+                                    cross_connect=True,
+                                )
                                 added_connections += 1
-        
+
         # Add shortcut connections between different levels
         for isd_id, distance_groups in as_by_distance.items():
             levels = sorted(distance_groups.keys())
             for i, level1 in enumerate(levels[:-1]):
                 if level1 == 0:  # Skip core level
                     continue
-                    
-                for level2 in levels[i+1:]:
+
+                for level2 in levels[i + 1 :]:
                     if level2 - level1 > 2:  # Skip if too far apart
                         continue
-                        
+
                     # Connect some ASes between levels
                     ases1 = distance_groups[level1]
                     ases2 = distance_groups[level2]
-                    
+
                     for as1 in ases1[:5]:  # Limit connections
                         for as2 in ases2[:5]:
                             if not G.has_edge(as1, as2):
-                                pos1 = (G.nodes[as1].get('x', 0), G.nodes[as1].get('y', 0))
-                                pos2 = (G.nodes[as2].get('x', 0), G.nodes[as2].get('y', 0))
-                                geo_dist = np.sqrt((pos1[0] - pos2[0])**2 + (pos1[1] - pos2[1])**2)
-                                
+                                pos1 = (
+                                    G.nodes[as1].get("x", 0),
+                                    G.nodes[as1].get("y", 0),
+                                )
+                                pos2 = (
+                                    G.nodes[as2].get("x", 0),
+                                    G.nodes[as2].get("y", 0),
+                                )
+                                geo_dist = np.sqrt(
+                                    (pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2
+                                )
+
                                 if geo_dist < 250 and np.random.random() < 0.1:
-                                    G.add_edge(as1, as2, bandwidth=1000.0, virtual=True, shortcut=True)
+                                    G.add_edge(
+                                        as1,
+                                        as2,
+                                        bandwidth=1000.0,
+                                        virtual=True,
+                                        shortcut=True,
+                                    )
                                     added_connections += 1
-        
+
         print(f"    Total dense connections added: {added_connections}")
-    
-    def _classify_links(self, G: nx.Graph, core_ases: set, 
-                       isd_assignment: Dict) -> Dict[Tuple[int, int], str]:
+
+    def _classify_links(
+        self, G: nx.Graph, core_ases: set, isd_assignment: Dict
+    ) -> Dict[Tuple[int, int], str]:
         """Classify links as core or parent-child (no peering links)"""
         link_types = {}
-        
+
         # First, ensure all non-core ASes have a path to core
         # Build a tree structure for each ISD
-        isd_trees = self._build_isd_trees(G, core_ases, isd_assignment)
-        
+        self._build_isd_trees(G, core_ases, isd_assignment)
+
         for u, v in G.edges():
             u_core = u in core_ases
             v_core = v in core_ases
             u_isd = isd_assignment[u]
             v_isd = isd_assignment[v]
-            
+
             if u_core and v_core:
                 # Both core -> core link
-                link_types[(u, v)] = 'core'
+                link_types[(u, v)] = "core"
             elif u_core and not v_core and u_isd == v_isd:
                 # Core to non-core in same ISD -> parent-child
-                link_types[(u, v)] = 'parent-child'
+                link_types[(u, v)] = "parent-child"
             elif not u_core and v_core and u_isd == v_isd:
                 # Non-core to core in same ISD -> child-parent
-                link_types[(u, v)] = 'child-parent'
+                link_types[(u, v)] = "child-parent"
             elif not u_core and not v_core and u_isd == v_isd:
                 # Determine parent-child direction based on distance to core
                 u_dist = self._distance_to_core(u, G, core_ases, isd_assignment, u_isd)
                 v_dist = self._distance_to_core(v, G, core_ases, isd_assignment, v_isd)
-                
+
                 if u_dist < v_dist:
-                    link_types[(u, v)] = 'parent-child'
+                    link_types[(u, v)] = "parent-child"
                 elif v_dist < u_dist:
-                    link_types[(u, v)] = 'child-parent'
+                    link_types[(u, v)] = "child-parent"
                 else:
                     # Same level - make it parent-child based on AS ID for consistency
                     if u < v:
-                        link_types[(u, v)] = 'parent-child'
+                        link_types[(u, v)] = "parent-child"
                     else:
-                        link_types[(u, v)] = 'child-parent'
+                        link_types[(u, v)] = "child-parent"
             # Cross-ISD non-core links are not allowed in SCION
-                
+
         return link_types
-    
-    def _build_isd_trees(self, G: nx.Graph, core_ases: set, 
-                        isd_assignment: Dict) -> Dict[int, set]:
+
+    def _build_isd_trees(
+        self, G: nx.Graph, core_ases: set, isd_assignment: Dict
+    ) -> Dict[int, set]:
         """Build minimum spanning trees to ensure connectivity to core ASes"""
         isd_trees = {}
-        
+
         # Group nodes by ISD
         isd_nodes = {}
         for node, isd in isd_assignment.items():
             if isd not in isd_nodes:
                 isd_nodes[isd] = []
             isd_nodes[isd].append(node)
-        
+
         # For each ISD, build a tree connecting all non-core to core
         for isd, nodes in isd_nodes.items():
             isd_core = [n for n in nodes if n in core_ases]
             isd_non_core = [n for n in nodes if n not in core_ases]
-            
+
             if not isd_core or not isd_non_core:
                 isd_trees[isd] = set()
                 continue
-            
+
             # Use BFS to build tree from core ASes
             tree_edges = set()
             visited = set(isd_core)
             queue = list(isd_core)
-            
+
             while queue and len(visited) < len(nodes):
                 current = queue.pop(0)
-                
+
                 # Check all neighbors in the same ISD
                 for neighbor in G.neighbors(current):
                     if neighbor not in visited and neighbor in nodes:
                         visited.add(neighbor)
                         tree_edges.add((current, neighbor))
                         queue.append(neighbor)
-            
+
             isd_trees[isd] = tree_edges
-            
+
         return isd_trees
-    
-    def _distance_to_core(self, node: int, G: nx.Graph, 
-                         core_ases: set, isd_assignment: Dict, isd: int) -> int:
+
+    def _distance_to_core(
+        self, node: int, G: nx.Graph, core_ases: set, isd_assignment: Dict, isd: int
+    ) -> int:
         """Calculate shortest path distance to nearest core AS in same ISD"""
         if node in core_ases:
             return 0
-            
+
         # BFS to find shortest path to any core AS
         visited = {node}
         queue = [(node, 0)]
-        
+
         while queue:
             current, dist = queue.pop(0)
-            
+
             for neighbor in G.neighbors(current):
                 if neighbor in visited:
                     continue
-                    
+
                 # SCION routing isolation: distance mapping MUST stay within the same ISD
                 if isd_assignment.get(neighbor) != isd:
                     continue
-                    
+
                 if neighbor in core_ases:
                     return dist + 1
-                    
+
                 visited.add(neighbor)
                 queue.append((neighbor, dist + 1))
-        
+
         # If no path found, return large number
         return 999
-    

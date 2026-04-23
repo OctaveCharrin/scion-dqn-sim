@@ -16,7 +16,6 @@ from datetime import datetime
 
 from _common import TOPOLOGY_SUBDIR_NAME, run_script
 
-
 PIPELINE_STEPS = [
     "01_generate_topology.py",
     "02_run_beaconing.py",
@@ -39,6 +38,13 @@ def main() -> None:
         dest="config_path",
         help="Path to an existing BRITE config file to use instead of generating one.",
     )
+    parser.add_argument(
+        "--isds",
+        dest="n_isds",
+        type=int,
+        default=3,
+        help="Number of ISDs to generate in the topology (default: 3)",
+    )
     args = parser.parse_args()
 
     if args.run_dir:
@@ -50,8 +56,11 @@ def main() -> None:
 
     for step in PIPELINE_STEPS:
         extra_args = []
-        if step == "01_generate_topology.py" and args.config_path:
-            extra_args = ["--config", args.config_path]
+        if step == "01_generate_topology.py":
+            if args.config_path:
+                extra_args.extend(["--config", args.config_path])
+            if args.n_isds:
+                extra_args.extend(["--isds", str(args.n_isds)])
         run_script(step, run_dir, extra_args=extra_args)
 
     banner = "=" * 60

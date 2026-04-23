@@ -6,26 +6,37 @@ All BRITE / SCION topology artifacts (config, ``.brite``, JSON, pickle, step
 PNGs) are written under ``<run_dir>/topology/``.
 """
 
-import os
-import sys
-import json
-import pickle
 import argparse
+import json
+import os
+import pickle
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 import networkx as nx
-
 from _common import topology_dir
-from src.topology.brite_cfg_gen import BRITEConfigGenerator, run_brite
-from src.topology.brite2scion_converter import BRITE2SCIONConverter
 
+from src.topology.brite2scion_converter import BRITE2SCIONConverter
+from src.topology.brite_cfg_gen import BRITEConfigGenerator, run_brite
 
 # Parse run directory and optional configurations
-parser = argparse.ArgumentParser(description="Generate dense SCION topology using BRITE.")
+parser = argparse.ArgumentParser(
+    description="Generate dense SCION topology using BRITE."
+)
 parser.add_argument("run_dir", nargs="?", default=None, help="Directory for the run")
-parser.add_argument("--config", dest="config_path", help="Path to an existing BRITE config file to use instead of generating one.")
+parser.add_argument(
+    "--config",
+    dest="config_path",
+    help="Path to an existing BRITE config file to use instead of generating one.",
+)
+parser.add_argument(
+    "--isds",
+    dest="n_isds",
+    type=int,
+    default=3,
+    help="Number of ISDs to generate (default: 3)",
+)
 args = parser.parse_args()
 
 # Allow this step to create a new run directory if none is provided.
@@ -55,7 +66,7 @@ if args.config_path:
 else:
     print("\n1. Generating BRITE configuration...")
     brite_gen = BRITEConfigGenerator()
-    
+
     # Configure for dense topology (numeric keys match BRITE ModelConstants / parser)
     # Set EVAL_BRITE_N_NODES for a faster smoke test (e.g. 45); default is large-scale.
     _eval_n = os.environ.get("EVAL_BRITE_N_NODES", "").strip()
@@ -72,7 +83,7 @@ else:
         "p": 0.15,
         "q": 0.2,
     }
-    
+
     brite_gen.generate(str(config_file), **config_params)
     print(f"BRITE config saved to: {config_file}")
 
@@ -83,8 +94,8 @@ brite_output = run_brite(Path(config_file), Path(brite_stem), brite_path=BRITE_P
 print(f"BRITE topology saved to: {brite_output}")
 
 # Step 3: Convert to SCION topology (includes random peering + step PNGs)
-print("\n3. Converting to SCION topology...")
-converter = BRITE2SCIONConverter()
+print(f"\n3. Converting to SCION topology with {args.n_isds} ISDs...")
+converter = BRITE2SCIONConverter(n_isds=args.n_isds)
 scion_topo = converter.convert_brite_file(brite_output, plot_dir=topo_dir)
 
 G = scion_topo["graph"]
