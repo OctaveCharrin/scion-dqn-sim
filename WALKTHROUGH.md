@@ -56,7 +56,7 @@ flowchart TB
 | `evaluation/run_full_evaluation.py` | Runs `01`–`06` in order. Creates a timestamped `evaluation/run_*` directory by default, or pass `--run-dir PATH` to reuse an existing run. Uses `_common.run_script()` for each step. |
 
 
-Evaluation uses **`scion_topology.json`** (NetworkX node-link) plus run-scoped pickles (`path_store.pkl`, `link_states.pkl`, etc.). Older **pandas** `topology.pkl` + `link_table.parquet` flows still exist under `src/` for reuse (e.g. `BRITE2SCIONConverter.convert()`, traffic engine) but are not wired through a Typer CLI anymore.
+Evaluation uses **`topology/scion_topology.json`** (NetworkX node-link) plus run-scoped pickles (`path_store.pkl`, `link_states.pkl`, etc.). Older **pandas** `topology.pkl` + `link_table.parquet` flows still exist under `src/` for reuse (e.g. `BRITE2SCIONConverter.convert()`, traffic engine) but are not wired through a Typer CLI anymore.
 
 ---
 
@@ -98,20 +98,19 @@ All steps share a directory like `evaluation/run_YYYYMMDD_HHMMSS/`. **`run_full_
 
 ### Step 1 — `01_generate_topology.py`
 
-1. `**BRITEConfigGenerator`** writes `brite_config.conf` (model codes such as AS Barabási–Albert / BA-2, `N`, bandwidth distribution, etc.). Node count can be overridden for smoke tests via env **`EVAL_BRITE_N_NODES`** (see script).
-2. **`src.topology.brite_cfg_gen.run_brite()`** runs the JAR; consumes the **`topology`** stem → produces **`topology.brite`**.
-3. `**BRITE2SCIONConverter.convert_brite_file()**` reads the BRITE export, assigns **ISDs** (k-means on coordinates for multi-ISD; single ISD for small graphs), picks **core ASes**, adds **virtual edges** for connectivity / diversity, **classifies links**, and returns a dict with:
+1. Creates **`topology/`** under the run directory. `**BRITEConfigGenerator**` writes **`topology/brite_config.conf`** (model codes such as AS Barabási–Albert / BA-2, `N`, bandwidth distribution, etc.). Node count can be overridden for smoke tests via env **`EVAL_BRITE_N_NODES`** (see script).
+2. **`src.topology.brite_cfg_gen.run_brite()`** runs the JAR; output stem **`topology/topology`** → **`topology/topology.brite`**.
+3. `**BRITE2SCIONConverter.convert_brite_file()**` reads the BRITE export, assigns **ISDs** (k-means on coordinates for multi-ISD; single ISD for small graphs), picks **core ASes**, adds **virtual edges** for connectivity / diversity, **classifies links**, adds **random PEER** edges for dense connectivity, and (when given **`plot_dir`**) saves **`step1_vanilla_brite.png`**, **`step2_scion_enhanced.png`**, **`step3_peering_enhanced.png`**. Returns a dict with:
   - `**graph`**: `networkx` graph (node attrs include `isd`, `x`, `y`; edges have `type`, `latency`, `bandwidth`),
   - `**isds`**: list of `{isd_id, member_ases}`,
   - `**core_ases`**: set of AS ids.
-4. Optional **extra peering** edges are added in the script for denser graphs.
-5. Writes `**scion_topology.json`** (node-link graph + metadata) and `**scion_topology.pkl`**.
+4. Writes **`topology/scion_topology.json`** (node-link graph + metadata) and **`topology/scion_topology.pkl`**.
 
-**Downstream contract**: later steps load `**scion_topology.json`** for dict/json usage.
+**Downstream contract**: later steps load **`topology/scion_topology.json`** for dict/json usage (with a fallback to the legacy run-root path if present).
 
 ### Step 2 — `02_run_beaconing.py`
 
-- Loads **`scion_topology.json`**, rebuilds a **NetworkX** graph, converts JSON → a temporary **`topology_beacon_input.pkl`** via **`src.simulation.json_topology_adapter.json_topology_to_beacon_pickle`** (DataFrame shape expected by the beacon simulator).
+- Loads **`topology/scion_topology.json`** (or legacy **`scion_topology.json`** at run root), rebuilds a **NetworkX** graph, converts JSON → a temporary **`topology_beacon_input.pkl`** via **`src.simulation.json_topology_adapter.json_topology_to_beacon_pickle`** (DataFrame shape expected by the beacon simulator).
 - Runs **`CorrectedBeaconSimulator`** from **`src.beacon.beacon_sim_v2`** (writes segment-like outputs under `beacon_output/`).
 - Enumerates candidate paths with **`src.simulation.path_builder.build_paths_for_pair`**, picks a diverse **(src, dst)** pair, fills **`InMemoryPathStore`**, and saves **`path_store.pkl`** and **`selected_pair.json`**.
 
@@ -238,10 +237,13 @@ These are common tripping points when extending the simulator or the learning st
 ## Quick reference: artifact flow (evaluation / BRITE path)
 
 ```text
-brite_config.conf
-topology.brite          ← BRITE JAR (+ seed_file)
-scion_topology.json     ← BRITE2SCIONConverter + peering tweaks
-scion_topology.pkl
+topology/brite_config.conf
+topology/topology.brite ← BRITE JAR (+ seed_file)
+topology/step1_vanilla_brite.png
+topology/step2_scion_enhanced.png
+topology/step3_peering_enhanced.png
+topology/scion_topology.json  ← BRITE2SCIONConverter (+ peering in converter)
+topology/scion_topology.pkl
 path_store.pkl          ← intended: beaconing / path discovery
 selected_pair.json
 traffic_flows.pkl       ← traffic simulation

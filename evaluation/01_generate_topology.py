@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Generate dense 50-AS SCION topology using BRITE
+Generate dense SCION topology using BRITE.
+
+All BRITE / SCION topology artifacts (config, ``.brite``, JSON, pickle, step
+PNGs) are written under ``<run_dir>/topology/``.
 """
 
 import os
@@ -10,9 +13,9 @@ import pickle
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
 import networkx as nx
 
+from _common import topology_dir
 from src.topology.brite_cfg_gen import BRITEConfigGenerator, run_brite
 from src.topology.brite2scion_converter import BRITE2SCIONConverter
 
@@ -26,7 +29,10 @@ else:
     os.makedirs(run_dir, exist_ok=True)
     print(f"Using run directory: {run_dir}")
 
-print(f"Creating dense SCION topology in {run_dir}")
+topo_dir = topology_dir(run_dir)
+topo_dir.mkdir(parents=True, exist_ok=True)
+
+print(f"Creating dense SCION topology under {topo_dir}")
 
 # Locate the BRITE distribution relative to the repo root.
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -53,100 +59,53 @@ config_params = {
     "q": 0.2,
 }
 
-config_file = os.path.join(run_dir, "brite_config.conf")
-brite_gen.generate(config_file, **config_params)
+config_file = topo_dir / "brite_config.conf"
+brite_gen.generate(str(config_file), **config_params)
 print(f"BRITE config saved to: {config_file}")
 
 # Step 2: Run BRITE to generate topology
 print("\n2. Running BRITE...")
-brite_stem = os.path.join(run_dir, "topology")
+brite_stem = topo_dir / "topology"
 brite_output = run_brite(Path(config_file), Path(brite_stem), brite_path=BRITE_PATH)
 print(f"BRITE topology saved to: {brite_output}")
 
-# Step 3: Convert to SCION topology
+# Step 3: Convert to SCION topology (includes random peering + step PNGs)
 print("\n3. Converting to SCION topology...")
 converter = BRITE2SCIONConverter()
-scion_topo = converter.convert_brite_file(brite_output)
+scion_topo = converter.convert_brite_file(brite_output, plot_dir=topo_dir)
 
-# Get the graph
-G = scion_topo['graph']
-nodes = list(G.nodes())
-np.random.seed(42)
+G = scion_topo["graph"]
 
-# Step 4: Enhance connectivity with additional peering links
-print("\n4. Adding peering links for dense connectivity...")
-num_peering_to_add = min(75, max(2, len(nodes) * len(nodes) // 4))
-added = 0
-interface_id = 1000  # Start peering interfaces at 1000
-
-while added < num_peering_to_add:
-    # Use Python int endpoints: numpy types + json.dump(..., default=str) would
-    # stringify node ids on edges, and node_link_graph would treat "2" and 2 as
-    # different ASes (inflated AS count after reload).
-    src, dst = map(int, np.random.choice(nodes, 2, replace=False))
-    
-    # Skip if already connected
-    if G.has_edge(src, dst) or G.has_edge(dst, src):
-        continue
-    
-    # Skip if in same ISD (prefer inter-ISD peering)
-    if G.nodes[src].get('isd') == G.nodes[dst].get('isd'):
-        if np.random.random() > 0.3:  # Still allow some intra-ISD peering
-            continue
-    
-    # Add bidirectional peering link
-    G.add_edge(src, dst, 
-               src_if=interface_id,
-               dst_if=interface_id + 1,
-               type='PEER',
-               bandwidth=np.random.uniform(5000, 10000),
-               latency=np.random.uniform(5, 25))
-    
-    G.add_edge(dst, src,
-               src_if=interface_id + 1,
-               dst_if=interface_id,
-               type='PEER',
-               bandwidth=np.random.uniform(5000, 10000),
-               latency=np.random.uniform(5, 25))
-    
-    interface_id += 2
-    added += 1
-
-print(f"Added {added} additional peering links")
-
-# Save enhanced topology
-topology_file = os.path.join(run_dir, "scion_topology.pkl")
-with open(topology_file, 'wb') as f:
+topology_file = topo_dir / "scion_topology.pkl"
+with open(topology_file, "wb") as f:
     pickle.dump(scion_topo, f)
 print(f"SCION topology saved to: {topology_file}")
 
-# Also save as JSON for inspection
 json_data = {
-    'isds': scion_topo['isds'],
-    'core_ases': list(scion_topo['core_ases']),
-    'graph': nx.node_link_data(G)
+    "isds": scion_topo["isds"],
+    "core_ases": list(scion_topo["core_ases"]),
+    "graph": nx.node_link_data(G),
 }
-json_file = os.path.join(run_dir, "scion_topology.json")
-with open(json_file, 'w') as f:
+json_file = topo_dir / "scion_topology.json"
+with open(json_file, "w") as f:
     json.dump(json_data, f, indent=2, default=str)
+print(f"SCION topology JSON saved to: {json_file}")
 
 # Print statistics
-print("\n5. Topology Statistics:")
+print("\n4. Topology Statistics:")
 print(f"   - Total ASes: {G.number_of_nodes()}")
 print(f"   - Total links: {G.number_of_edges()}")
 print(f"   - ISDs: {len(scion_topo['isds'])}")
 print(f"   - Core ASes: {len(scion_topo['core_ases'])}")
 
-# Count link types
-link_types = {}
+link_types: dict[str, int] = {}
 for _, _, data in G.edges(data=True):
-    link_type = data.get('type', 'UNKNOWN')
+    link_type = str(data.get("type", "UNKNOWN"))
     link_types[link_type] = link_types.get(link_type, 0) + 1
 print("   - Link types:")
 for lt, count in sorted(link_types.items()):
     print(f"     - {lt}: {count}")
 
-# Check connectivity
 if nx.is_connected(G.to_undirected()):
     print("   - Graph is connected: Yes")
 else:
@@ -154,8 +113,7 @@ else:
     components = list(nx.connected_components(G.to_undirected()))
     print(f"   - Number of components: {len(components)}")
 
-# Calculate average degree
 avg_degree = sum(dict(G.degree()).values()) / len(G)
 print(f"   - Average degree: {avg_degree:.2f}")
 
-print(f"\nTopology generation complete! Files saved in {run_dir}/")
+print(f"\nTopology generation complete! Artifacts in {topo_dir}/")

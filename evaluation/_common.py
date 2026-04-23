@@ -22,6 +22,18 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 # -----------------------------------------------------------------------------
+# Topology artifact layout (under each ``run_*`` directory)
+# -----------------------------------------------------------------------------
+
+TOPOLOGY_SUBDIR_NAME = "topology"
+
+
+def topology_dir(run_dir: str | Path) -> Path:
+    """Return ``<run_dir>/topology`` where BRITE/SCION artifacts and step plots live."""
+    return Path(run_dir) / TOPOLOGY_SUBDIR_NAME
+
+
+# -----------------------------------------------------------------------------
 # Run directory
 # -----------------------------------------------------------------------------
 
@@ -148,9 +160,11 @@ __all__ = [
     "FULL_WIDTH",
     "METHOD_COLORS",
     "METHOD_DISPLAY_NAMES",
+    "TOPOLOGY_SUBDIR_NAME",
     "apply_lncs_style",
     "color_for",
     "display_name",
     "resolve_run_dir",
     "run_script",
+    "topology_dir",
 ]

@@ -7,13 +7,14 @@ import os
 import json
 import pickle
 import time
+from pathlib import Path
 from collections import defaultdict
 
 import numpy as np
 import torch
 from tqdm import tqdm
 
-from _common import resolve_run_dir
+from _common import resolve_run_dir, topology_dir
 
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
 from src.simulation.evaluation_env import EvaluationPathSelectionEnv
@@ -27,7 +28,11 @@ from src.baselines.scion_default import SCIONDefaultSelector
 run_dir = resolve_run_dir()
 
 # Load all necessary data
-with open(os.path.join(run_dir, "scion_topology.json"), 'r') as f:
+_topo_json = topology_dir(run_dir) / "scion_topology.json"
+if not _topo_json.is_file():
+    _leg = os.path.join(run_dir, "scion_topology.json")
+    _topo_json = Path(_leg) if os.path.isfile(_leg) else _topo_json
+with open(_topo_json, "r") as f:
     topology_data = json.load(f)
 
 with open(os.path.join(run_dir, "selected_pair.json"), 'r') as f:

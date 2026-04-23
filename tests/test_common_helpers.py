@@ -40,6 +40,14 @@ def test_resolve_run_dir_errors_when_missing(tmp_path: Path, common_module):
         common_module.resolve_run_dir(["script.py"], cwd=tmp_path)
 
 
+def test_topology_dir(common_module, tmp_path: Path):
+    run = tmp_path / "run_20260101_120000"
+    run.mkdir()
+    td = common_module.topology_dir(run)
+    assert td == run / common_module.TOPOLOGY_SUBDIR_NAME
+    assert td.name == "topology"
+
+
 def test_method_name_and_color_defaults(common_module):
     assert common_module.display_name("dqn") == "DQN (Ours)"
     assert common_module.display_name("unknown-method") == "unknown-method"

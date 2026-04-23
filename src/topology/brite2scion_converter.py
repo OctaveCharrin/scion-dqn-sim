@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 from pathlib import Path
-from typing import Dict, Tuple, Optional
+from typing import Dict, Optional, Set, Tuple
 from sklearn.cluster import KMeans
 import pickle
 
@@ -110,16 +110,39 @@ class BRITE2SCIONConverter:
             
         return topology
 
-    def convert_brite_file(self, brite_file: Path) -> Dict:
+    def convert_brite_file(
+        self,
+        brite_file: Path,
+        *,
+        plot_dir: Optional[Path] = None,
+    ) -> Dict:
         """
-        Load a BRITE ``.brite`` export, run SCION assignment/classification, and return
-        the structure expected by ``evaluation/01_generate_topology.py`` (graph + isds + core_ases).
+        Load a BRITE ``.brite`` export, run SCION assignment/classification, optional
+        random peering densification, and return ``graph`` + ``isds`` + ``core_ases``.
+
+        If ``plot_dir`` is set, writes three PNG snapshots:
+
+        1. ``step1_vanilla_brite.png`` — positions + raw BRITE edges only.
+        2. ``step2_scion_enhanced.png`` — after ISD/core/virtual/dense links + classification.
+        3. ``step3_peering_enhanced.png`` — after extra random PEER links.
         """
         brite_file = Path(brite_file)
+        plot_dir = Path(plot_dir) if plot_dir is not None else None
+        if plot_dir is not None:
+            plot_dir.mkdir(parents=True, exist_ok=True)
+
         G, node_attrs = self._read_brite_edges(brite_file)
         for n in G.nodes():
             G.nodes[n]["x"] = float(node_attrs[n]["x"])
             G.nodes[n]["y"] = float(node_attrs[n]["y"])
+
+        if plot_dir is not None:
+            self._save_topology_step_png(
+                plot_dir / "step1_vanilla_brite.png",
+                G,
+                set(),
+                "Step 1: Vanilla BRITE (layout + physical edges)",
+            )
 
         topology_size = len(G.nodes())
         if topology_size < 200:
@@ -148,6 +171,25 @@ class BRITE2SCIONConverter:
             G[u][v]["latency"] = delay
             G[u][v]["bandwidth"] = bw
 
+        if plot_dir is not None:
+            self._save_topology_step_png(
+                plot_dir / "step2_scion_enhanced.png",
+                G,
+                set(core_ases),
+                "Step 2: SCION enhancements (ISD, core, dense links, classified types)",
+            )
+
+        n_peer = self.add_random_peering_links(G, rng=np.random.default_rng(42))
+        print(f"\nAdded {n_peer} random PEER link(s) for dense connectivity")
+
+        if plot_dir is not None:
+            self._save_topology_step_png(
+                plot_dir / "step3_peering_enhanced.png",
+                G,
+                set(core_ases),
+                f"Step 3: + random peering ({n_peer} new PEER edges)",
+            )
+
         isds = [
             {
                 "isd_id": int(isd_id),
@@ -165,6 +207,149 @@ class BRITE2SCIONConverter:
             "isds": isds,
             "core_ases": set(core_ases),
         }
+
+    def add_random_peering_links(
+        self,
+        G: nx.Graph,
+        *,
+        rng: Optional[np.random.Generator] = None,
+        max_links: Optional[int] = None,
+    ) -> int:
+        """Add random bidirectional-style PEER edges (single undirected edge in ``Graph``).
+
+        Nodes must already have ``isd`` set. Matches the former logic in
+        ``evaluation/01_generate_topology.py`` (prefer inter-ISD peering).
+        """
+        rng = rng or np.random.default_rng(42)
+        nodes = [int(n) for n in G.nodes()]
+        n = len(nodes)
+        if n < 2:
+            return 0
+        cap = max_links if max_links is not None else min(75, max(2, n * n // 4))
+        interface_id = 1000
+        added = 0
+        attempts = 0
+        max_attempts = max(2000, cap * 200)
+        while added < cap and attempts < max_attempts:
+            attempts += 1
+            src, dst = int(rng.choice(nodes)), int(rng.choice(nodes))
+            if src == dst:
+                continue
+            if G.has_edge(src, dst):
+                continue
+            if G.nodes[src].get("isd") == G.nodes[dst].get("isd"):
+                if rng.random() > 0.3:
+                    continue
+            G.add_edge(
+                src,
+                dst,
+                src_if=interface_id,
+                dst_if=interface_id + 1,
+                type="PEER",
+                bandwidth=float(rng.uniform(5000, 10000)),
+                latency=float(rng.uniform(5, 25)),
+            )
+            interface_id += 2
+            added += 1
+        return added
+
+    def _save_topology_step_png(
+        self,
+        out_path: Path,
+        G: nx.Graph,
+        core_ases: Set[int],
+        title: str,
+    ) -> None:
+        """Write a quick geographic snapshot of ``G`` (expects ``x``/``y`` on nodes)."""
+        import matplotlib.pyplot as plt
+
+        pos: Dict[int, Tuple[float, float]] = {}
+        for n, d in G.nodes(data=True):
+            if "x" in d and "y" in d:
+                pos[int(n)] = (float(d["x"]), float(d["y"]))
+        missing = [n for n in G.nodes() if int(n) not in pos]
+        if missing:
+            sub = G.subgraph(missing).copy()
+            if sub.number_of_nodes() > 0:
+                spr = nx.spring_layout(sub, seed=42)
+                for n in missing:
+                    ni = int(n)
+                    if ni in spr:
+                        pos[ni] = (float(spr[n][0]), float(spr[n][1]))
+
+        edge_color_map = {
+            "CORE": "#e74c3c",
+            "PARENT_CHILD": "#3498db",
+            "CHILD_PARENT": "#85c1e9",
+            "PEER": "#27ae60",
+            "peer": "#27ae60",
+        }
+
+        fig, ax = plt.subplots(figsize=(11, 9))
+        for u, v in G.edges():
+            d = G[u][v]
+            et = str(d.get("type", ""))
+            ec = edge_color_map.get(et, "#bdc3c7")
+            w = 2.0 if et in ("CORE", "PEER", "peer") else 1.0
+            if u in pos and v in pos:
+                ax.plot(
+                    [pos[u][0], pos[v][0]],
+                    [pos[u][1], pos[v][1]],
+                    color=ec,
+                    linewidth=w,
+                    alpha=0.65,
+                    zorder=1,
+                )
+
+        non_core = [n for n in G.nodes() if int(n) not in core_ases]
+        core_list = [n for n in G.nodes() if int(n) in core_ases]
+
+        if non_core:
+            ax.scatter(
+                [pos[int(n)][0] for n in non_core if int(n) in pos],
+                [pos[int(n)][1] for n in non_core if int(n) in pos],
+                s=55,
+                c="#7f8c8d",
+                zorder=3,
+                label="Non-core AS",
+            )
+        if core_list:
+            ax.scatter(
+                [pos[int(n)][0] for n in core_list if int(n) in pos],
+                [pos[int(n)][1] for n in core_list if int(n) in pos],
+                s=140,
+                c="#2c3e50",
+                marker="s",
+                zorder=4,
+                label="Core AS",
+            )
+
+        if G.number_of_nodes() <= 100:
+            for n in G.nodes():
+                ni = int(n)
+                if ni not in pos:
+                    continue
+                ax.annotate(
+                    str(ni),
+                    pos[ni],
+                    fontsize=6,
+                    ha="center",
+                    va="center",
+                    color="white" if ni in core_ases else "black",
+                    zorder=5,
+                )
+
+        ax.set_title(title, fontsize=12)
+        ax.set_xlabel("x (BRITE layout)")
+        ax.set_ylabel("y (BRITE layout)")
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.grid(True, alpha=0.25)
+        if core_list or non_core:
+            ax.legend(loc="upper right", fontsize=8)
+        out_path = Path(out_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
     
     def _read_brite_edges(self, brite_file: Path) -> Tuple[nx.Graph, Dict]:
         """Read BRITE topology file (BriteExport format) and extract node positions and edges."""

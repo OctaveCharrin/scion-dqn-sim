@@ -12,7 +12,7 @@ Note: This is a work in progress and some components are not yet fully implement
 - **Deep reinforcement learning**: DQN training with selective probing
 - **Performance metrics and figures**: Method comparison and Matplotlib exports (PNG)
 - **Baseline comparisons**: Shortest path, widest path, lowest latency, ECMP, random, and SCION default selectors
-- **Topology visualization**: Full dashboard or geographic map from `scion_topology.json` (or topology pickle)
+- **Topology visualization**: Full dashboard or geographic map from `topology/scion_topology.json` (or topology pickle in the same folder)
 
 ## Installation
 
@@ -70,7 +70,7 @@ The orchestrator and numbered scripts share helpers in **`evaluation/_common.py`
 
 **Steps executed:**
 
-1. **`01_generate_topology.py`** — BRITE config, JAR run, SCION JSON + pickle (`scion_topology.json`).
+1. **`01_generate_topology.py`** — Under **`topology/`**: BRITE config, **`topology.brite`**, SCION JSON + pickle, and three **`step*.png`** snapshots (vanilla BRITE → SCION enhancements → peering).
 2. **`02_run_beaconing.py`** — Beacon simulation input + path store + selected AS pair.
 3. **`03_simulate_traffic.py`** — 28 days of traffic + per-hour link states.
 4. **`04_train_dqn.py`** — DQN training on the first 14 days.
@@ -88,7 +88,7 @@ EVAL_BRITE_N_NODES=45 uv run python run_full_evaluation.py
 
 | File | Description |
 |------|-------------|
-| `scion_topology.json` / `scion_topology.pkl` | Topology |
+| `topology/scion_topology.json` / `topology/scion_topology.pkl` | Topology (plus `topology/step*.png`, `brite_config.conf`, `topology.brite`) |
 | `path_store.pkl`, `selected_pair.json` | Paths and evaluation pair |
 | `traffic_flows.pkl`, `link_states.pkl` | Traffic and link dynamics |
 | `dqn_model.pth`, `training_stats.json` | Trained agent and training log |
@@ -114,7 +114,7 @@ uv run python 06_generate_figures.py run_YYYYMMDD_HHMMSS
 
 ### Topology maps (optional)
 
-After a run has `scion_topology.json` (or `scion_topology.pkl`), generate **topology figures** with **`evaluation/visualize_topology.py`**:
+After a run has `topology/scion_topology.json` (or `topology/scion_topology.pkl`), generate **topology figures** with **`evaluation/visualize_topology.py`**:
 
 ```bash
 cd evaluation
@@ -126,7 +126,7 @@ uv run python visualize_topology.py run_YYYYMMDD_HHMMSS --mode full --report
 uv run python visualize_topology.py --mode simple
 
 # Explicit JSON path and output directory
-uv run python visualize_topology.py -t run_YYYYMMDD_HHMMSS/scion_topology.json -o ./figures --mode full
+uv run python visualize_topology.py -t run_YYYYMMDD_HHMMSS/topology/scion_topology.json -o ./figures --mode full
 ```
 
 - **`--mode full`** (default): writes **`topology_dashboard.png`**, and unless **`--no-extras`** is set, also **`isd_map.png`**, **`core_network.png`**, **`connectivity_matrix.png`** in the same folder as the dashboard.
@@ -180,14 +180,14 @@ from pathlib import Path
 from src.visualization.topology_visualizer import render_scion_topology_png, TopologyVisualizer
 
 render_scion_topology_png(
-    Path("evaluation/run_YYYYMMDD_HHMMSS/scion_topology.json"),
+    Path("evaluation/run_YYYYMMDD_HHMMSS/topology/scion_topology.json"),
     Path("topology_export.png"),
     dpi=200,
 )
 
 # Or the full dashboard + extras:
 TopologyVisualizer().visualize_topology(
-    Path("evaluation/run_YYYYMMDD_HHMMSS/scion_topology.json"),
+    Path("evaluation/run_YYYYMMDD_HHMMSS/topology/scion_topology.json"),
     Path("out/topology_dashboard.png"),
 )
 ```

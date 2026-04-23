@@ -14,7 +14,7 @@ import argparse
 import os
 from datetime import datetime
 
-from _common import run_script
+from _common import TOPOLOGY_SUBDIR_NAME, run_script
 
 
 PIPELINE_STEPS = [
@@ -51,7 +51,7 @@ def main() -> None:
     print(f"\nAll results saved in: {run_dir}/")
     print("\nKey outputs:")
     for name, desc in [
-        ("scion_topology.json", "Network topology"),
+        (f"{TOPOLOGY_SUBDIR_NAME}/scion_topology.json", "Network topology"),
         ("selected_pair.json", "Source-destination pair"),
         ("dqn_model.pth", "Trained DQN model"),
         ("evaluation_results.json", "Performance comparison"),

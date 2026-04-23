@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import networkx as nx
 
-from _common import resolve_run_dir
+from _common import resolve_run_dir, topology_dir
 
 from src.beacon.beacon_sim_v2 import CorrectedBeaconSimulator
 from src.simulation.json_topology_adapter import json_topology_to_beacon_pickle
@@ -22,7 +22,11 @@ run_dir = resolve_run_dir()
 run_path = Path(run_dir)
 
 # Load topology JSON
-topology_file = run_path / "scion_topology.json"
+topology_file = topology_dir(run_path) / "scion_topology.json"
+if not topology_file.is_file():
+    legacy = run_path / "scion_topology.json"
+    if legacy.is_file():
+        topology_file = legacy
 with open(topology_file, "r") as f:
     topology_data = json.load(f)
 

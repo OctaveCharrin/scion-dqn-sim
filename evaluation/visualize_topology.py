@@ -16,7 +16,7 @@ Examples
   uv run python visualize_topology.py
   uv run python visualize_topology.py run_20260422_120000
   uv run python visualize_topology.py --mode simple
-  uv run python visualize_topology.py -t path/to/scion_topology.json -o out.png --mode full
+  uv run python visualize_topology.py -t path/to/topology/scion_topology.json -o out.png --mode full
   uv run python visualize_topology.py --report --no-extras
 """
 
@@ -105,15 +105,23 @@ def main() -> None:
 
             run_dir = resolve_run_dir()
         base_dir = Path(run_dir).resolve()
-        topo_json = base_dir / "scion_topology.json"
-        topo_pkl = base_dir / "scion_topology.pkl"
+        from _common import topology_dir
+
+        tdir = topology_dir(base_dir)
+        topo_json = tdir / "scion_topology.json"
+        topo_pkl = tdir / "scion_topology.pkl"
         if topo_json.is_file():
             topo_path = topo_json
         elif topo_pkl.is_file():
             topo_path = topo_pkl
+        elif (base_dir / "scion_topology.json").is_file():
+            topo_path = base_dir / "scion_topology.json"
+        elif (base_dir / "scion_topology.pkl").is_file():
+            topo_path = base_dir / "scion_topology.pkl"
         else:
             raise SystemExit(
-                f"No scion_topology.json or scion_topology.pkl under {base_dir}"
+                f"No scion_topology.json or scion_topology.pkl under {tdir} "
+                f"(or legacy location {base_dir})"
             )
 
     if not topo_path.is_file():

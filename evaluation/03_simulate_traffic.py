@@ -6,17 +6,22 @@ Simulate 28 days of traffic on the SCION network
 import os
 import json
 import pickle
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
 from tqdm import tqdm
 
-from _common import resolve_run_dir
+from _common import resolve_run_dir, topology_dir
 
 run_dir = resolve_run_dir()
 
 # Load topology and selected pair
-with open(os.path.join(run_dir, "scion_topology.json"), 'r') as f:
+_topo_json = topology_dir(run_dir) / "scion_topology.json"
+if not _topo_json.is_file():
+    _legacy = os.path.join(run_dir, "scion_topology.json")
+    _topo_json = Path(_legacy) if os.path.isfile(_legacy) else _topo_json
+with open(_topo_json, "r") as f:
     topology_data = json.load(f)
 
 with open(os.path.join(run_dir, "selected_pair.json"), 'r') as f:
