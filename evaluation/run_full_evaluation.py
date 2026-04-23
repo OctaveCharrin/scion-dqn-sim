@@ -34,6 +34,11 @@ def main() -> None:
         default=None,
         help="Existing run directory to reuse (default: create a new timestamped run_*)",
     )
+    parser.add_argument(
+        "--config",
+        dest="config_path",
+        help="Path to an existing BRITE config file to use instead of generating one.",
+    )
     args = parser.parse_args()
 
     if args.run_dir:
@@ -44,7 +49,10 @@ def main() -> None:
     print(f"Using run directory: {run_dir}")
 
     for step in PIPELINE_STEPS:
-        run_script(step, run_dir)
+        extra_args = []
+        if step == "01_generate_topology.py" and args.config_path:
+            extra_args = ["--config", args.config_path]
+        run_script(step, run_dir, extra_args=extra_args)
 
     banner = "=" * 60
     print(f"\n{banner}\nEVALUATION COMPLETE!\n{banner}")

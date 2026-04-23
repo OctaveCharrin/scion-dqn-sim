@@ -10,6 +10,8 @@ import os
 import sys
 import json
 import pickle
+import argparse
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -20,9 +22,15 @@ from src.topology.brite_cfg_gen import BRITEConfigGenerator, run_brite
 from src.topology.brite2scion_converter import BRITE2SCIONConverter
 
 
+# Parse run directory and optional configurations
+parser = argparse.ArgumentParser(description="Generate dense SCION topology using BRITE.")
+parser.add_argument("run_dir", nargs="?", default=None, help="Directory for the run")
+parser.add_argument("--config", dest="config_path", help="Path to an existing BRITE config file to use instead of generating one.")
+args = parser.parse_args()
+
 # Allow this step to create a new run directory if none is provided.
-if len(sys.argv) > 1:
-    run_dir = sys.argv[1]
+if args.run_dir:
+    run_dir = args.run_dir
     print(f"Using run directory: {run_dir}")
 else:
     run_dir = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -38,30 +46,35 @@ print(f"Creating dense SCION topology under {topo_dir}")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 BRITE_PATH = REPO_ROOT / "external" / "brite"
 
-# Step 1: Generate dense BRITE topology configuration
-print("\n1. Generating BRITE configuration...")
-brite_gen = BRITEConfigGenerator()
-
-# Configure for dense topology (numeric keys match BRITE ModelConstants / parser)
-# Set EVAL_BRITE_N_NODES for a faster smoke test (e.g. 45); default is large-scale.
-_eval_n = os.environ.get("EVAL_BRITE_N_NODES", "").strip()
-_default_nodes = int(_eval_n) if _eval_n.isdigit() else 1000
-config_params = {
-    "n_nodes": _default_nodes,
-    "model_name": 10,
-    "hs": 1000,
-    "ls": 100,
-    "m": 4,
-    "bw_dist": 1,
-    "bw_min": 1000.0,
-    "bw_max": 10000.0,
-    "p": 0.15,
-    "q": 0.2,
-}
-
 config_file = topo_dir / "brite_config.conf"
-brite_gen.generate(str(config_file), **config_params)
-print(f"BRITE config saved to: {config_file}")
+
+# Step 1: Generate or copy BRITE topology configuration
+if args.config_path:
+    print(f"\n1. Using provided BRITE configuration from: {args.config_path}")
+    shutil.copy(args.config_path, config_file)
+else:
+    print("\n1. Generating BRITE configuration...")
+    brite_gen = BRITEConfigGenerator()
+    
+    # Configure for dense topology (numeric keys match BRITE ModelConstants / parser)
+    # Set EVAL_BRITE_N_NODES for a faster smoke test (e.g. 45); default is large-scale.
+    _eval_n = os.environ.get("EVAL_BRITE_N_NODES", "").strip()
+    _default_nodes = int(_eval_n) if _eval_n.isdigit() else 100
+    config_params = {
+        "n_nodes": _default_nodes,
+        "model_name": 10,
+        "hs": 1000,
+        "ls": 100,
+        "m": 4,
+        "bw_dist": 1,
+        "bw_min": 1000.0,
+        "bw_max": 10000.0,
+        "p": 0.15,
+        "q": 0.2,
+    }
+    
+    brite_gen.generate(str(config_file), **config_params)
+    print(f"BRITE config saved to: {config_file}")
 
 # Step 2: Run BRITE to generate topology
 print("\n2. Running BRITE...")

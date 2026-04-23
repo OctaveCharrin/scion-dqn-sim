@@ -76,7 +76,8 @@ def resolve_run_dir(argv: Optional[Sequence[str]] = None,
 # -----------------------------------------------------------------------------
 
 def run_script(script_name: str, run_dir: Optional[str] = None, *,
-               cwd: Optional[Path] = None) -> str:
+               cwd: Optional[Path] = None,
+               extra_args: Optional[list[str]] = None) -> str:
     """Execute a numbered pipeline script and print its output.
 
     Exits with status 1 if the script fails.
@@ -87,6 +88,8 @@ def run_script(script_name: str, run_dir: Optional[str] = None, *,
     cmd = [sys.executable, script_name]
     if run_dir:
         cmd.append(run_dir)
+    if extra_args:
+        cmd.extend(extra_args)
 
     start = time.time()
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
