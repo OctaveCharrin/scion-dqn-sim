@@ -1,0 +1,54 @@
+# Unified topology generation for evaluation/01_generate_topology.py
+#
+# CLI:  uv run python 01_generate_topology.py [RUN_DIR] --topology-config path/to.yaml
+# If --topology-config is omitted, this file (next to the script) is loaded when present.
+
+generator: brite  # "brite" | "top_down"
+
+# Global defaults (used when a more specific field is null / omitted).
+seed: 42
+
+brite:
+  # If non-null, copy this existing BRITE .conf into topology/ instead of synthesizing from java_model.
+  external_config_path: null
+  # BRITE distribution root (relative to repository root unless absolute).
+  brite_path: external/brite
+
+  # Numeric model parameters passed to BRITEConfigGenerator.generate when external_config_path is null.
+  java_model:
+    n_nodes: 100
+    model_name: 10
+    hs: 1000
+    ls: 100
+    m: 4
+    node_placement: 1
+    bw_dist: 1
+    bw_min: 1000.0
+    bw_max: 10000.0
+    p: 0.15
+    q: 0.2
+
+  scion_converter:
+    n_isds: 3
+    core_ratio: 0.075
+
+  convert:
+    # null = built-in cap in add_random_peering_links (function of graph size).
+    extra_peering_max_links: null
+    # null = fall back to global `seed`, then 42.
+    extra_peering_seed: null
+
+top_down:
+  n_nodes: 1000
+  n_isds: 5
+  geographic_peering:
+    distance_cap: null
+    probability: null
+  additional_random_peering_max_links: 0
+  additional_random_peering_seed: null
+
+output:
+  # BRITE: step1_vanilla_brite.png … step3_peering_enhanced.png.
+  # top_down: step1_top_down_layout.png … step3_top_down_peering.png.
+  save_step_pngs: true
+  dump_resolved_config: true

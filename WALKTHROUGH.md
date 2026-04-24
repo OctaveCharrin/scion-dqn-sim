@@ -98,15 +98,17 @@ All steps share a directory like `evaluation/run_YYYYMMDD_HHMMSS/`. **`run_full_
 
 ### Step 1 — `01_generate_topology.py`
 
-1. Creates **`topology/`** under the run directory. `**BRITEConfigGenerator**` writes **`topology/brite_config.conf`** (model codes such as AS Barabási–Albert / BA-2, `N`, bandwidth distribution, etc.). Node count can be overridden for smoke tests via env **`EVAL_BRITE_N_NODES`** (see script).
-2. **`src.topology.brite_cfg_gen.run_brite()`** runs the JAR; output stem **`topology/topology`** → **`topology/topology.brite`**.
-3. `**BRITE2SCIONConverter.convert_brite_file()**` reads the BRITE export, assigns **ISDs** (k-means on coordinates for multi-ISD; single ISD for small graphs), picks **core ASes**, adds **virtual edges** for connectivity / diversity, **classifies links**, adds **random PEER** edges for dense connectivity, and (when given **`plot_dir`**) saves **`step1_vanilla_brite.png`**, **`step2_scion_enhanced.png`**, **`step3_peering_enhanced.png`**. Returns a dict with:
+1. Loads **`evaluation/topology_defaults.yaml`**, optionally merged with **`--topology-config PATH`**, and writes the resolved YAML to **`topology/topology_config_resolved.yaml`** (unless disabled under **`output.dump_resolved_config`**).
+2. **`generator: brite`** (default): creates **`topology/`**, writes **`topology/brite_config.conf`** (from **`brite.java_model`** or copies **`brite.external_config_path`**), runs **`src.topology.brite_cfg_gen.run_brite()`** → **`topology/topology.brite`**, then **`BRITE2SCIONConverter.convert_brite_file()`** (ISD/core/virtual links, classification, configurable extra peering via **`brite.convert`**, optional **`output.save_step_pngs`** → three **`step*.png`** files).
+3. **`generator: top_down`**: runs **`TopDownSCIONGenerator`** (no BRITE/JAR). ISDs come from **k-means on (x, y)** via **`src/topology/topology_geo.assign_isds_kmeans_coordinates`** (same idea as the BRITE converter). Cores are the ASes **closest to each ISD centroid**; inter-ISD links follow the same **core ring** pattern as **`_ensure_core_connectivity`** so the graph stays connected. With **`output.save_step_pngs`**, writes the three **`step*_top_down_*.png`** files using **`topology_geo.save_topology_geography_png`**.
+4. In both cases, writes **`topology/scion_topology.json`** and **`topology/scion_topology.pkl`** with:
   - `**graph`**: `networkx` graph (node attrs include `isd`, `x`, `y`; edges have `type`, `latency`, `bandwidth`),
   - `**isds`**: list of `{isd_id, member_ases}`,
   - `**core_ases`**: set of AS ids.
-4. Writes **`topology/scion_topology.json`** (node-link graph + metadata) and **`topology/scion_topology.pkl`**.
 
 **Downstream contract**: later steps load **`topology/scion_topology.json`** for dict/json usage (with a fallback to the legacy run-root path if present).
+
+**Smoke BRITE node count**: env **`EVAL_BRITE_N_NODES`** still overrides **`brite.java_model.n_nodes`** when generating a new `.conf` (not when using **`external_config_path`**).
 
 ### Step 2 — `02_run_beaconing.py`
 
@@ -237,12 +239,12 @@ These are common tripping points when extending the simulator or the learning st
 ## Quick reference: artifact flow (evaluation / BRITE path)
 
 ```text
-topology/brite_config.conf
-topology/topology.brite ← BRITE JAR (+ seed_file)
-topology/step1_vanilla_brite.png
-topology/step2_scion_enhanced.png
-topology/step3_peering_enhanced.png
-topology/scion_topology.json  ← BRITE2SCIONConverter (+ peering in converter)
+topology/brite_config.conf          (BRITE generator only)
+topology/topology.brite             (BRITE JAR + seed_file)
+topology/step1_vanilla_brite.png    (BRITE)  |  step1_top_down_layout.png (top_down)
+topology/step2_scion_enhanced.png   (BRITE)  |  step2_top_down_hierarchy.png
+topology/step3_peering_enhanced.png (BRITE) |  step3_top_down_peering.png
+topology/scion_topology.json      ← BRITE2SCIONConverter or TopDownSCIONGenerator
 topology/scion_topology.pkl
 path_store.pkl          ← intended: beaconing / path discovery
 selected_pair.json

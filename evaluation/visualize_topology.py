@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 Plot topology from an evaluation run (``scion_topology.json`` or pickle).
+Works for both BRITE- and **top-down**-generated topologies (same JSON schema).
 
 Modes
 -----

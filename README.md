@@ -70,7 +70,7 @@ The orchestrator and numbered scripts share helpers in **`evaluation/_common.py`
 
 **Steps executed:**
 
-1. **`01_generate_topology.py`** — Under **`topology/`**: BRITE config, **`topology.brite`**, SCION JSON + pickle, and three **`step*.png`** snapshots (vanilla BRITE → SCION enhancements → peering).
+1. **`01_generate_topology.py`** — Reads **`evaluation/topology_defaults.yaml`** (override with **`--topology-config PATH`**). Set **`generator: brite`** (default) or **`generator: top_down`**. Writes **`topology/scion_topology.{json,pkl}`**, **`topology/topology_config_resolved.yaml`** (effective merged config), and under **`topology/`** either BRITE artifacts + three **`step*.png`** snapshots, or (top-down) a Python-built graph plus three **`step*_top_down_*.png`** snapshots when **`output.save_step_pngs`** is true.
 2. **`02_run_beaconing.py`** — Beacon simulation input + path store + selected AS pair.
 3. **`03_simulate_traffic.py`** — 28 days of traffic + per-hour link states.
 4. **`04_train_dqn.py`** — DQN training on the first 14 days.
@@ -88,7 +88,7 @@ EVAL_BRITE_N_NODES=45 uv run python run_full_evaluation.py
 
 | File | Description |
 |------|-------------|
-| `topology/scion_topology.json` / `topology/scion_topology.pkl` | Topology (plus `topology/step*.png`, `brite_config.conf`, `topology.brite`) |
+| `topology/scion_topology.json` / `topology/scion_topology.pkl` | Topology (plus `topology/topology_config_resolved.yaml`; BRITE: `step*.png`, `brite_config.conf`, `topology.brite`; top-down: `step1_top_down_layout.png`, `step2_top_down_hierarchy.png`, `step3_top_down_peering.png` when plots enabled) |
 | `path_store.pkl`, `selected_pair.json` | Paths and evaluation pair |
 | `traffic_flows.pkl`, `link_states.pkl` | Traffic and link dynamics |
 | `dqn_model.pth`, `training_stats.json` | Trained agent and training log |
@@ -105,6 +105,7 @@ cd evaluation
 mkdir -p run_YYYYMMDD_HHMMSS   # optional if 01 creates the dir when invoked without argv
 
 uv run python 01_generate_topology.py run_YYYYMMDD_HHMMSS
+uv run python 01_generate_topology.py run_YYYYMMDD_HHMMSS --topology-config my_topology.yaml
 uv run python 02_run_beaconing.py run_YYYYMMDD_HHMMSS
 uv run python 03_simulate_traffic.py run_YYYYMMDD_HHMMSS
 uv run python 04_train_dqn.py run_YYYYMMDD_HHMMSS

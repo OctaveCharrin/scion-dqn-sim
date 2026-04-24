@@ -13,7 +13,8 @@ from typing import Dict, Optional, Set, Tuple
 
 import networkx as nx
 import numpy as np
-from sklearn.cluster import KMeans
+
+from src.topology.topology_geo import assign_isds_kmeans_coordinates, save_topology_geography_png
 
 
 class BRITE2SCIONConverter:
@@ -35,6 +36,8 @@ class BRITE2SCIONConverter:
         brite_file: Path,
         *,
         plot_dir: Optional[Path] = None,
+        extra_peering_max_links: Optional[int] = None,
+        extra_peering_seed: Optional[int] = None,
     ) -> Dict:
         """
         Load a BRITE ``.brite`` export, run SCION assignment/classification, optional
@@ -45,6 +48,14 @@ class BRITE2SCIONConverter:
         1. ``step1_vanilla_brite.png`` — positions + raw BRITE edges only.
         2. ``step2_scion_enhanced.png`` — after ISD/core/virtual/dense links + classification.
         3. ``step3_peering_enhanced.png`` — after extra random PEER links.
+
+        Parameters
+        ----------
+        extra_peering_max_links:
+            Passed to ``add_random_peering_links(..., max_links=...)``. ``None`` keeps
+            the built-in cap (function of ``n``).
+        extra_peering_seed:
+            Seed for the NumPy RNG used during extra peering. ``None`` uses ``42``.
         """
         brite_file = Path(brite_file)
         plot_dir = Path(plot_dir) if plot_dir is not None else None
@@ -92,7 +103,11 @@ class BRITE2SCIONConverter:
                 "Step 2: SCION enhancements (ISD, core, dense links, classified types)",
             )
 
-        n_peer = self.add_random_peering_links(G, rng=np.random.default_rng(42))
+        peer_seed = 42 if extra_peering_seed is None else int(extra_peering_seed)
+        peer_rng = np.random.default_rng(peer_seed)
+        n_peer = self.add_random_peering_links(
+            G, rng=peer_rng, max_links=extra_peering_max_links
+        )
         print(f"\nAdded {n_peer} random PEER link(s) for dense connectivity")
 
         if plot_dir is not None:
@@ -179,97 +194,13 @@ class BRITE2SCIONConverter:
         G: nx.Graph,
         core_ases: Set[int],
         title: str,
+        *,
+        xy_axis_label: str = "BRITE layout",
     ) -> None:
         """Write a quick geographic snapshot of ``G`` (expects ``x``/``y`` on nodes)."""
-        import matplotlib.pyplot as plt
-
-        pos: Dict[int, Tuple[float, float]] = {}
-        for n, d in G.nodes(data=True):
-            if "x" in d and "y" in d:
-                pos[int(n)] = (float(d["x"]), float(d["y"]))
-        missing = [n for n in G.nodes() if int(n) not in pos]
-        if missing:
-            sub = G.subgraph(missing).copy()
-            if sub.number_of_nodes() > 0:
-                spr = nx.spring_layout(sub, seed=42)
-                for n in missing:
-                    ni = int(n)
-                    if ni in spr:
-                        pos[ni] = (float(spr[n][0]), float(spr[n][1]))
-
-        edge_color_map = {
-            "CORE": "#e74c3c",
-            "PARENT_CHILD": "#3498db",
-            "CHILD_PARENT": "#85c1e9",
-            "PEER": "#27ae60",
-            "peer": "#27ae60",
-        }
-
-        fig, ax = plt.subplots(figsize=(11, 9))
-        for u, v in G.edges():
-            d = G[u][v]
-            et = str(d.get("type", ""))
-            ec = edge_color_map.get(et, "#bdc3c7")
-            w = 2.0 if et in ("CORE", "PEER", "peer") else 1.0
-            if u in pos and v in pos:
-                ax.plot(
-                    [pos[u][0], pos[v][0]],
-                    [pos[u][1], pos[v][1]],
-                    color=ec,
-                    linewidth=w,
-                    alpha=0.65,
-                    zorder=1,
-                )
-
-        non_core = [n for n in G.nodes() if int(n) not in core_ases]
-        core_list = [n for n in G.nodes() if int(n) in core_ases]
-
-        if non_core:
-            ax.scatter(
-                [pos[int(n)][0] for n in non_core if int(n) in pos],
-                [pos[int(n)][1] for n in non_core if int(n) in pos],
-                s=55,
-                c="#7f8c8d",
-                zorder=3,
-                label="Non-core AS",
-            )
-        if core_list:
-            ax.scatter(
-                [pos[int(n)][0] for n in core_list if int(n) in pos],
-                [pos[int(n)][1] for n in core_list if int(n) in pos],
-                s=140,
-                c="#2c3e50",
-                marker="s",
-                zorder=4,
-                label="Core AS",
-            )
-
-        if G.number_of_nodes() <= 100:
-            for n in G.nodes():
-                ni = int(n)
-                if ni not in pos:
-                    continue
-                ax.annotate(
-                    str(ni),
-                    pos[ni],
-                    fontsize=6,
-                    ha="center",
-                    va="center",
-                    color="white" if ni in core_ases else "black",
-                    zorder=5,
-                )
-
-        ax.set_title(title, fontsize=12)
-        ax.set_xlabel("x (BRITE layout)")
-        ax.set_ylabel("y (BRITE layout)")
-        ax.set_aspect("equal", adjustable="datalim")
-        ax.grid(True, alpha=0.25)
-        if core_list or non_core:
-            ax.legend(loc="upper right", fontsize=8)
-        out_path = Path(out_path)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out_path, dpi=160, bbox_inches="tight", facecolor="white")
-        plt.close(fig)
+        save_topology_geography_png(
+            out_path, G, core_ases, title, xy_axis_label=xy_axis_label
+        )
 
     def _read_brite_edges(self, brite_file: Path) -> Tuple[nx.Graph, Dict]:
         """Read BRITE topology file (BriteExport format) and extract node positions and edges."""
@@ -318,20 +249,16 @@ class BRITE2SCIONConverter:
         return G, node_attrs
 
     def _assign_isds(self, G: nx.Graph, node_attrs: Dict) -> Dict[int, int]:
-        """Assign nodes to ISDs using k-means on geographic coordinates"""
+        """Assign nodes to ISDs using k-means on geographic coordinates."""
         nodes = sorted(G.nodes())
-
-        # Special case: if only 1 ISD, assign all nodes to ISD 0
         if self.n_isds == 1:
             return {node: 0 for node in nodes}
-
-        # Otherwise, use k-means clustering
-        coords = np.array([[node_attrs[n]["x"], node_attrs[n]["y"]] for n in nodes])
-
-        kmeans = KMeans(n_clusters=self.n_isds, random_state=42)
-        labels = kmeans.fit_predict(coords)
-
-        return {node: int(label) for node, label in zip(nodes, labels)}
+        xs = np.array([float(node_attrs[n]["x"]) for n in nodes])
+        ys = np.array([float(node_attrs[n]["y"]) for n in nodes])
+        by_index = assign_isds_kmeans_coordinates(
+            xs, ys, self.n_isds, random_state=42
+        )
+        return {nodes[i]: by_index[i] for i in range(len(nodes))}
 
     def _select_core_ases(self, G: nx.Graph, isd_assignment: Dict) -> set:
         """Select core ASes based on degree centrality per ISD (5-10% of ASes per ISD)"""

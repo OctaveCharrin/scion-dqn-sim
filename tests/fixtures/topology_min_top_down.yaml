@@ -1,0 +1,13 @@
+generator: top_down
+seed: 7
+top_down:
+  n_nodes: 35
+  n_isds: 2
+  geographic_peering:
+    distance_cap: 300.0
+    probability: 0.12
+  additional_random_peering_max_links: 2
+  additional_random_peering_seed: 99
+output:
+  save_step_pngs: false
+  dump_resolved_config: true
