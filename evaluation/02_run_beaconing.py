@@ -94,7 +94,7 @@ paths_for_selection: list = []
 if diverse_pairs:
     best_pair, best_count = diverse_pairs[0]
     src_as, dst_as = best_pair
-    print(f"\nSelected source-destination pair:")
+    print("\nSelected source-destination pair:")
     print(f"  Source AS: {src_as}")
     print(f"  Destination AS: {dst_as}")
     print(f"  Number of paths: {best_count}")
@@ -104,7 +104,7 @@ if diverse_pairs:
         latencies.append(sum(hop.get("latency", 10) for hop in path["hops"]))
         bandwidths.append(min(hop.get("bandwidth", 1000) for hop in path["hops"]))
     if hop_counts:
-        print(f"\n  Path characteristics:")
+        print("\n  Path characteristics:")
         print(
             f"    Hop counts: min={min(hop_counts)}, max={max(hop_counts)}, avg={np.mean(hop_counts):.1f}"
         )

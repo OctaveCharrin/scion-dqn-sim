@@ -28,8 +28,7 @@ class BRITE2SCIONConverter:
         """
         self.n_isds = n_isds
         self.original_n_isds = n_isds  # Store original value
-        # Bound core_ratio to 5-10%
-        self.core_ratio = max(0.05, min(0.10, core_ratio))
+        self.core_ratio = core_ratio
 
     def convert_brite_file(
         self,
@@ -276,11 +275,11 @@ class BRITE2SCIONConverter:
             subgraph = G.subgraph(nodes)
             degrees = dict(subgraph.degree())
 
-            # Calculate number of core ASes (5-10% of ASes in this ISD)
+            # Calculate number of core ASes
             n_core = max(1, int(len(nodes) * self.core_ratio))
 
-            # Ensure we don't exceed 10% even with rounding
-            max_core = max(1, int(len(nodes) * 0.10))
+            # # Ensure we don't exceed node count even with rounding
+            max_core = max(1, int(len(nodes)))
             n_core = min(n_core, max_core)
 
             # Sort by degree and select top nodes

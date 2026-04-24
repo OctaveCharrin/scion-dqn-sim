@@ -167,24 +167,3 @@ def run_brite(
             f"BRITE did not create expected file: {out_file}\n{combined}"
         )
     return out_file
-
-
-class BRITERunner:
-    """Run BRITE via the bundled JAR (Main.Brite requires config, output stem, seed file)."""
-
-    def __init__(self, brite_path: Optional[Path] = None):
-        self.brite_path = Path(brite_path or "external/brite")
-
-    def run_parallel(
-        self, config_files: List[Path], output_dir: Path, n_jobs: int = -1
-    ) -> List[Path]:
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        return [
-            run_brite(
-                Path(cfg).resolve(),
-                (output_dir / Path(cfg).stem).resolve(),
-                brite_path=self.brite_path,
-            )
-            for cfg in config_files
-        ]

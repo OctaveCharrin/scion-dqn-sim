@@ -13,6 +13,7 @@ Orchestrates the 6 numbered steps into a single run directory:
 import argparse
 import os
 from datetime import datetime
+from pathlib import Path
 
 from _common import TOPOLOGY_SUBDIR_NAME, run_script
 
@@ -39,11 +40,11 @@ def main() -> None:
         help="Path to an existing BRITE config file to use instead of generating one.",
     )
     parser.add_argument(
-        "--isds",
-        dest="n_isds",
-        type=int,
-        default=3,
-        help="Number of ISDs to generate in the topology (default: 3)",
+        "--topology-config",
+        "-C",
+        type=Path,
+        default=None,
+        help="YAML file overriding defaults (merged on top of topology_defaults.yaml).",
     )
     args = parser.parse_args()
 
@@ -59,8 +60,8 @@ def main() -> None:
         if step == "01_generate_topology.py":
             if args.config_path:
                 extra_args.extend(["--config", args.config_path])
-            if args.n_isds:
-                extra_args.extend(["--isds", str(args.n_isds)])
+            if args.topology_config:
+                extra_args.extend(["--topology-config", args.topology_config])
         run_script(step, run_dir, extra_args=extra_args)
 
     banner = "=" * 60
