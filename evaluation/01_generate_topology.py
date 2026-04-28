@@ -154,6 +154,13 @@ def _run_brite(cfg: Dict[str, Any], topo_dir: Path, brite_path: Path, save_png: 
     if extra_seed is None:
         extra_seed = 42
 
+    prune_frac_raw = _get(cnv, "prune_cross_isd_noncore_fraction", default=0.0)
+    prune_frac = float(prune_frac_raw) if prune_frac_raw is not None else 0.0
+    prune_seed = _coalesce_int(
+        _get(cnv, "prune_cross_isd_noncore_seed"),
+        extra_seed,
+    )
+
     converter = BRITE2SCIONConverter(
         n_isds=int(_get(conv_cfg, "n_isds", default=3)),
         core_ratio=float(_get(conv_cfg, "core_ratio", default=0.075)),
@@ -165,6 +172,8 @@ def _run_brite(cfg: Dict[str, Any], topo_dir: Path, brite_path: Path, save_png: 
         plot_dir=plot_dir,
         extra_peering_max_links=_get(cnv, "extra_peering_max_links"),
         extra_peering_seed=extra_seed,
+        prune_cross_isd_noncore_fraction=prune_frac,
+        prune_cross_isd_noncore_seed=prune_seed,
     )
     return scion_topo
 

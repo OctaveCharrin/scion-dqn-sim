@@ -37,6 +37,12 @@ brite:
     extra_peering_max_links: null
     # null = fall back to global `seed`, then 42.
     extra_peering_seed: null
+    # Remove this fraction of edges between two non-core ASes in different ISDs
+    # (after classification, before random PEER injection). 0 disables.
+    # Typical values 0.1–0.35 to thin unrealistic cross-ISD mesh among leaf ASes.
+    prune_cross_isd_noncore_fraction: 0
+    # null = same RNG seed resolution as extra_peering_seed.
+    prune_cross_isd_noncore_seed: null
 
 top_down:
   n_nodes: 1000

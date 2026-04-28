@@ -86,7 +86,7 @@ w2 = 0.3  # Weight for link trust
 w3 = 0.5  # Weight for packet loss in trust calculation
 w4 = 0.5  # Weight for delay in trust calculation
 
-print(f"\nDQN Configuration:")
+print("\nDQN Configuration:")
 print(f"  State dimensions: {state_dim}")
 print(f"  Action space: {num_paths} paths")
 print(f"  Reward weights: w1={w1}, w2={w2}, w3={w3}, w4={w4}")
@@ -202,8 +202,8 @@ stats_file = os.path.join(run_dir, "training_stats.json")
 with open(stats_file, 'w') as f:
     json.dump(training_stats, f, indent=2)
 
-print(f"\nTraining statistics:")
+print("\nTraining statistics:")
 print(f"  Average reward: {training_stats['avg_reward']:.3f}")
 print(f"  Average probes per selection: {training_stats['avg_probes_per_episode']:.1f}")
 print(f"  Final epsilon: {training_stats['final_epsilon']:.3f}")
-print(f"\nTraining complete!")
+print("\nTraining complete!")

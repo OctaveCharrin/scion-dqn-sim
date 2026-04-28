@@ -9,7 +9,7 @@ Converts BRITE topologies to SCION format with:
 """
 
 from pathlib import Path
-from typing import Dict, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import networkx as nx
 import numpy as np
@@ -37,6 +37,8 @@ class BRITE2SCIONConverter:
         plot_dir: Optional[Path] = None,
         extra_peering_max_links: Optional[int] = None,
         extra_peering_seed: Optional[int] = None,
+        prune_cross_isd_noncore_fraction: float = 0.0,
+        prune_cross_isd_noncore_seed: Optional[int] = None,
     ) -> Dict:
         """
         Load a BRITE ``.brite`` export, run SCION assignment/classification, optional
@@ -55,6 +57,15 @@ class BRITE2SCIONConverter:
             the built-in cap (function of ``n``).
         extra_peering_seed:
             Seed for the NumPy RNG used during extra peering. ``None`` uses ``42``.
+        prune_cross_isd_noncore_fraction:
+            If ``> 0``, after link classification removes approximately this
+            fraction of edges whose **both** endpoints are non-core and lie in
+            **different** ISDs (typical BRITE/dense-helper artefacts). Does not
+            remove edges touching a core AS. Runs **before** random PEER
+            injection so explicit peering still reflects the intended policy.
+        prune_cross_isd_noncore_seed:
+            RNG seed for the prune shuffle. ``None`` reuses ``extra_peering_seed``
+            resolution (global ``seed`` / ``42``).
         """
         brite_file = Path(brite_file)
         plot_dir = Path(plot_dir) if plot_dir is not None else None
@@ -94,6 +105,27 @@ class BRITE2SCIONConverter:
             G[u][v]["latency"] = delay
             G[u][v]["bandwidth"] = bw
 
+        peer_seed = 42 if extra_peering_seed is None else int(extra_peering_seed)
+
+        if prune_cross_isd_noncore_fraction and prune_cross_isd_noncore_fraction > 0:
+            pseed = (
+                int(prune_cross_isd_noncore_seed)
+                if prune_cross_isd_noncore_seed is not None
+                else peer_seed
+            )
+            p_rng = np.random.default_rng(pseed)
+            n_pruned = self._prune_cross_isd_noncore_edges(
+                G,
+                core_ases,
+                isd_assignment,
+                float(prune_cross_isd_noncore_fraction),
+                p_rng,
+            )
+            print(
+                f"\nPruned {n_pruned} cross-ISD non-core edge(s) "
+                f"(target fraction {float(prune_cross_isd_noncore_fraction):.2%})"
+            )
+
         if plot_dir is not None:
             self._save_topology_step_png(
                 plot_dir / "step2_scion_enhanced.png",
@@ -102,7 +134,6 @@ class BRITE2SCIONConverter:
                 "Step 2: SCION enhancements (ISD, core, dense links, classified types)",
             )
 
-        peer_seed = 42 if extra_peering_seed is None else int(extra_peering_seed)
         peer_rng = np.random.default_rng(peer_seed)
         n_peer = self.add_random_peering_links(
             G, rng=peer_rng, max_links=extra_peering_max_links
@@ -186,6 +217,45 @@ class BRITE2SCIONConverter:
             interface_id += 2
             added += 1
         return added
+
+    def _prune_cross_isd_noncore_edges(
+        self,
+        G: nx.Graph,
+        core_ases: Set[int],
+        isd_assignment: Dict[int, int],
+        fraction: float,
+        rng: np.random.Generator,
+    ) -> int:
+        """
+        Remove a random subset of edges between two **non-core** ASes in
+        **different** ISDs.
+
+        BRITE plus dense-connection helpers often leave many such edges; trimming
+        a fraction mimics selective settlement / fewer direct non-core ties
+        across ISDs while **explicit** PEER injection (later) still models IXPs.
+        """
+        if fraction <= 0:
+            return 0
+        fraction = min(1.0, float(fraction))
+        cands: List[Tuple[int, int]] = []
+        for u, v in list(G.edges()):
+            if u in core_ases or v in core_ases:
+                continue
+            if int(isd_assignment[u]) == int(isd_assignment[v]):
+                continue
+            cands.append((int(u), int(v)))
+        if not cands:
+            return 0
+        n_remove = int(round(len(cands) * fraction))
+        n_remove = min(len(cands), max(0, n_remove))
+        order = rng.permutation(len(cands))
+        removed = 0
+        for j in range(n_remove):
+            u, v = cands[int(order[j])]
+            if G.has_edge(u, v):
+                G.remove_edge(u, v)
+                removed += 1
+        return removed
 
     def _save_topology_step_png(
         self,
