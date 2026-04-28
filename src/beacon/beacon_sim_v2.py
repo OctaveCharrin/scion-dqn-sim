@@ -1,15 +1,27 @@
 """
-Corrected beacon simulator with full SCION interface tracking
+SCION beacon simulator (control plane).
 
-This version properly tracks interface IDs during beaconing as required by the
-SCION control plane specification.
+Implements the two-phase SCION beaconing model:
+
+1. **Core beaconing** — every core AS originates Path Construction Beacons
+   (PCBs) and propagates them across CORE links (intra-ISD and inter-ISD).
+   Generated segments are registered as ``core_segments``.
+2. **Intra-ISD beaconing** — each core originates PCBs that propagate
+   strictly **top-down** along ``parent-child`` links toward non-core ASes.
+   The reverse direction (``child-parent``) is never traversed during
+   beaconing — that direction is consumed only when the resulting
+   segments are reused as up-segments later.
+
+Peer links are never used to propagate PCBs: the path-builder consumes
+them as shortcuts when assembling end-to-end paths from up/core/down
+segments. To keep PCB fan-out tractable on dense topologies, both phases
+support a per-originator fan-out cap (``max_segments_per_origin``) and a
+BFS-pop budget (``max_intra_queue_pops``).
 """
 
 import os
-import numpy as np
-import pandas as pd
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any
+from typing import Dict, List, Optional, Any
 import pickle
 import networkx as nx
 from collections import defaultdict, deque
@@ -34,33 +46,32 @@ class PCB:
 
 
 class CorrectedBeaconSimulator:
-    """SCION beacon simulator with proper interface tracking"""
-    
-    def __init__(self, 
-                 core_beacon_interval: float = 60.0,
-                 intra_beacon_interval: float = 5.0,
-                 max_segment_ttl: int = 24 * 3600,  # 24 hours
-                 max_segments_per_type: int = 50,
-                 max_intra_queue_pops: Optional[int] = None,
-                 max_intra_segments_per_isd: Optional[int] = None):
-        """
-        Initialize beacon simulator
-        
+    """SCION beacon simulator with proper interface tracking and SCION-compliant
+    propagation rules (top-down intra-ISD, peer-link skip).
+    """
+
+    def __init__(
+        self,
+        max_segments_per_type: int = 50,
+        max_intra_queue_pops: Optional[int] = None,
+        max_intra_segments_per_isd: Optional[int] = None,
+        max_segments_per_origin: Optional[int] = None,
+    ):
+        """Initialize beacon simulator.
+
         Args:
-            core_beacon_interval: Seconds between core beacons
-            intra_beacon_interval: Seconds between intra-ISD beacons
-            max_segment_ttl: Maximum segment lifetime in seconds
-            max_segments_per_type: Max segments to keep per (src,dst,type) tuple
+            max_segments_per_type: Max segments to keep per (src, dst, type) tuple.
             max_intra_queue_pops: Cap BFS-style intra-ISD propagation work per
                 originating core (avoids exponential blow-ups on dense graphs).
                 Defaults to 80_000 or ``BEACON_INTRA_MAX_POPS`` if set.
-            max_intra_segments_per_isd: Max registered *down* intra segments per ISD
-                (each adds a matching up segment). Defaults to 20_000 or
+            max_intra_segments_per_isd: Max registered *down* intra segments per
+                ISD (each adds a matching up segment). Defaults to 20_000 or
                 ``BEACON_MAX_INTRA_SEGMENTS_PER_ISD`` if set.
+            max_segments_per_origin: Soft fan-out cap per originating core for
+                each phase (core / intra). Mirrors the way real SCION beacon
+                services keep only the top-K candidate beacons per origin.
+                Defaults to 200 or ``BEACON_MAX_SEGMENTS_PER_ORIGIN`` if set.
         """
-        self.core_beacon_interval = core_beacon_interval
-        self.intra_beacon_interval = intra_beacon_interval
-        self.max_segment_ttl = max_segment_ttl
         self.max_segments_per_type = max_segments_per_type
         if max_intra_queue_pops is not None:
             self.max_intra_queue_pops = int(max_intra_queue_pops)
@@ -72,21 +83,24 @@ class CorrectedBeaconSimulator:
         else:
             env_ms = os.environ.get("BEACON_MAX_INTRA_SEGMENTS_PER_ISD")
             self.max_intra_segments_per_isd = int(env_ms) if env_ms else 20_000
+        if max_segments_per_origin is not None:
+            self.max_segments_per_origin = int(max_segments_per_origin)
+        else:
+            env_so = os.environ.get("BEACON_MAX_SEGMENTS_PER_ORIGIN")
+            self.max_segments_per_origin = int(env_so) if env_so else 200
         
-    def simulate(self, topology_path: Path, output_dir: Path, 
-                 simulation_time: float = 300.0) -> Dict:
-        """
-        Run beacon simulation with proper interface tracking
-        
+    def simulate(self, topology_path: Path, output_dir: Path) -> Dict:
+        """Run beacon simulation with proper interface tracking.
+
         Args:
-            topology_path: Path to topology pickle
-            output_dir: Directory for outputs
-            simulation_time: Simulation duration in seconds
-            
+            topology_path: Path to topology pickle.
+            output_dir: Directory for outputs.
+
         Returns:
-            Segment store and statistics
+            ``(segment_store, stats)`` tuple where ``segment_store`` is the
+            legacy dict shape consumed by the path builder.
         """
-        print("=== Corrected Beacon Simulation ===\n")
+        print("=== SCION Beacon Simulation ===\n")
         self._intra_budget_warned = False
         self._intra_seg_cap_warned = False
         self._intra_segment_cap_hit = False
@@ -94,13 +108,13 @@ class CorrectedBeaconSimulator:
         # Load topology
         with open(topology_path, 'rb') as f:
             topology = pickle.load(f)
-            
+
         self.node_df = topology['nodes']
         self.edge_df = topology['edges']
-        
+
         # Build graph with interface info
         self.G = self._build_graph()
-        
+
         # Initialize segment store
         self.segments = {
             'core': [],
@@ -112,10 +126,10 @@ class CorrectedBeaconSimulator:
 
         # Run simulation phases
         print("Phase 1: Core Beaconing")
-        core_stats = self._simulate_core_beaconing(simulation_time)
-        
-        print("\nPhase 2: Intra-ISD Beaconing")  
-        intra_stats = self._simulate_intra_beaconing(simulation_time)
+        core_stats = self._simulate_core_beaconing()
+
+        print("\nPhase 2: Intra-ISD Beaconing")
+        intra_stats = self._simulate_intra_beaconing()
         
         # Save results
         output_dir = Path(output_dir)
@@ -166,114 +180,104 @@ class CorrectedBeaconSimulator:
                       
         return G
     
-    def _simulate_core_beaconing(self, duration: float) -> Dict:
-        """Simulate core AS beaconing"""
+    def _simulate_core_beaconing(self) -> Dict:
+        """Simulate core AS beaconing across CORE links (intra- and inter-ISD)."""
         core_ases = list(self.node_df[self.node_df['role'] == 'core']['as_id'])
         print(f"  Core ASes: {core_ases}")
-        
+
         stats = {
             'beacons_originated': 0,
             'segments_discovered': 0,
             'propagation_depths': []
         }
-        
-        # Each core AS originates beacons
+
         for originator in core_ases:
-            # Create initial PCB
             pcb = PCB(originator=originator)
             pcb.segment_id = f"core_{originator}_{int(time.time())}"
-            
-            # Add originator hop (no ingress/egress for originator)
             pcb.path.append({
                 'as': originator,
                 'ingress': None,
-                'egress': None
+                'egress': None,
             })
-            
-            # Propagate to neighbor cores
             self._propagate_core_pcb(pcb, originator, stats)
             stats['beacons_originated'] += 1
-            
+
         print(f"  Originated: {stats['beacons_originated']} beacons")
         print(f"  Discovered: {stats['segments_discovered']} core segments")
-        
+
         return stats
     
     def _propagate_core_pcb(self, pcb: PCB, current_as: int, stats: Dict):
-        """Propagate PCB through core network ensuring full connectivity"""
-        # For core beaconing, we want to discover ALL possible core paths
-        # Use path signatures to avoid loops
+        """Propagate PCB through the core network across CORE links only.
+
+        The adapter writes both directions of each undirected edge, so we only
+        traverse outgoing edges (``successors``). The previous implementation
+        also iterated ``predecessors`` and a fallback ``forward=False`` branch,
+        which double-counted every edge.
+
+        Per-origin fan-out is bounded by ``self.max_segments_per_origin`` so
+        dense topologies cannot produce an unbounded combinatorial expansion of
+        core segments.
+        """
         visited_paths = set()
         queue = deque([(current_as, pcb)])
         reached_cores = {pcb.originator}
-        
+        segments_for_origin = 0
+        cap_per_origin = self.max_segments_per_origin
+
         while queue:
+            if segments_for_origin >= cap_per_origin:
+                break
             current, current_pcb = queue.popleft()
-            
-            # Create path signature
             path_sig = tuple(h['as'] for h in current_pcb.path)
-            
-            # Check all neighbors
-            for neighbor in self.G.neighbors(current):
-                # Avoid loops
+
+            for neighbor in self.G.successors(current):
                 if neighbor in path_sig:
                     continue
-                    
-                # Get edge data
+
+                # Beacons only ride CORE links; PEER edges are not used as
+                # beacon carriers in the SCION control plane.
                 edge_data = self.G.get_edge_data(current, neighbor)
                 if not edge_data:
                     continue
-                    
-                # Find core link (including virtual links)
                 core_edge = None
-                for edge_key, edge_info in edge_data.items():
-                    if edge_info['type'] == 'core' or edge_info.get('virtual', False):
-                        core_edge = edge_info
-                        # For virtual links, ensure proper interface IDs
-                        if 'u_if' not in core_edge:
-                            core_edge['u_if'] = 99  # Virtual interface
-                        if 'v_if' not in core_edge:
-                            core_edge['v_if'] = 99  # Virtual interface
+                for _, edge_info in edge_data.items():
+                    if edge_info.get('type') == 'core':
+                        core_edge = dict(edge_info)
                         break
-                        
-                if not core_edge:
+                if core_edge is None:
                     continue
-                    
-                # Check if neighbor is core AS
-                neighbor_role = self.G.nodes[neighbor].get('role')
-                if neighbor_role != 'core':
+
+                if self.G.nodes[neighbor].get('role') != 'core':
                     continue
-                    
-                # Check if we've seen this path before
+
                 new_path_sig = path_sig + (neighbor,)
                 if new_path_sig in visited_paths:
                     continue
                 visited_paths.add(new_path_sig)
-                    
-                # Create new PCB for propagation
+
                 new_pcb = current_pcb.copy()
-                
-                # Update last hop with egress interface
-                new_pcb.path[-1]['egress'] = core_edge['u_if']
-                
-                # Add new hop
+                # Forward direction: u_if is the egress at ``current``,
+                # v_if is the ingress at ``neighbor``.
+                new_pcb.path[-1]['egress'] = core_edge.get('u_if')
                 new_pcb.path.append({
                     'as': neighbor,
-                    'ingress': core_edge['v_if'],
-                    'egress': None  # Will be filled when propagating further
+                    'ingress': core_edge.get('v_if'),
+                    'egress': None,
                 })
-                
-                # Register segment (from originator to this core)
-                self._register_core_segment(new_pcb, stats)
+
+                if self._register_core_segment(new_pcb, stats):
+                    segments_for_origin += 1
                 reached_cores.add(neighbor)
-                
-                # Continue propagation
                 queue.append((neighbor, new_pcb))
-                
+
+                if segments_for_origin >= cap_per_origin:
+                    break
+
         stats['propagation_depths'].append(len(reached_cores) - 1)
     
-    def _register_core_segment(self, pcb: PCB, stats: Dict):
-        """Register a core segment"""
+    def _register_core_segment(self, pcb: PCB, stats: Dict) -> bool:
+        """Register a core segment. Returns True if a new segment was added."""
         segment = {
             'type': 'core',
             'src': pcb.originator,
@@ -281,82 +285,94 @@ class CorrectedBeaconSimulator:
             'hops': [h.copy() for h in pcb.path],
             'path': [h['as'] for h in pcb.path],
             'segment_id': pcb.segment_id,
-            'timestamp': time.time()
+            'timestamp': time.time(),
         }
         key = (segment['src'], segment['dst'], tuple(segment['path']))
         if key in self._core_segment_keys:
-            return
+            return False
         self._core_segment_keys.add(key)
 
         self.segments['core'].append(segment)
         stats['segments_discovered'] += 1
+        return True
     
-    def _simulate_intra_beaconing(self, duration: float) -> Dict:
-        """Simulate intra-ISD beaconing"""
+    def _simulate_intra_beaconing(self) -> Dict:
+        """Simulate intra-ISD beaconing (strictly top-down parent→child)."""
         stats = defaultdict(lambda: {
             'beacons_originated': 0,
             'up_segments': 0,
             'down_segments': 0,
-            'coverage': 0.0
+            'coverage': 0.0,
         })
-        
-        # Process each ISD
+
         for isd in sorted(self.node_df['isd'].unique()):
             print(f"\n  ISD {isd}:")
             isd_nodes = self.node_df[self.node_df['isd'] == isd]
             isd_cores = list(isd_nodes[isd_nodes['role'] == 'core']['as_id'])
             isd_non_cores = list(isd_nodes[isd_nodes['role'] == 'non-core']['as_id'])
-            
+
             if not isd_cores:
                 print("    No core ASes - skipping")
                 continue
-                
+
             print(f"    Core ASes: {isd_cores}")
             print(f"    Non-core ASes: {len(isd_non_cores)}")
             self._intra_segment_cap_hit = False
 
-            # Each core originates beacons for intra-ISD
-            reachable_non_cores = set()
-            
+            reachable_non_cores: set = set()
+
             for core_originator in isd_cores:
                 if self._intra_segment_cap_hit:
                     break
-                # Create initial PCB
                 pcb = PCB(originator=core_originator)
-                pcb.segment_id = f"intra_{isd}_{core_originator}_{int(time.time())}"
-                
-                # Add originator hop
+                pcb.segment_id = (
+                    f"intra_{isd}_{core_originator}_{int(time.time())}"
+                )
                 pcb.path.append({
                     'as': core_originator,
                     'ingress': None,
-                    'egress': None
+                    'egress': None,
                 })
-                
-                # Propagate within ISD
-                reached = self._propagate_intra_pcb(pcb, core_originator, isd, stats[isd])
+                reached = self._propagate_intra_pcb(
+                    pcb, core_originator, isd, stats[isd]
+                )
                 reachable_non_cores.update(reached)
                 stats[isd]['beacons_originated'] += 1
-            
-            # Calculate coverage
+
             if isd_non_cores:
-                stats[isd]['coverage'] = len(reachable_non_cores) / len(isd_non_cores)
-                
+                stats[isd]['coverage'] = (
+                    len(reachable_non_cores) / len(isd_non_cores)
+                )
+
             print(f"    Beacons originated: {stats[isd]['beacons_originated']}")
             print(f"    Up segments: {stats[isd]['up_segments']}")
             print(f"    Down segments: {stats[isd]['down_segments']}")
             print(f"    Non-core coverage: {stats[isd]['coverage']:.1%}")
-            
+
         return dict(stats)
     
-    def _propagate_intra_pcb(self, pcb: PCB, current_as: int, 
-                            isd: int, stats: Dict) -> set:
-        """Propagate PCB within ISD, return reached non-core ASes"""
-        # Track visited paths to avoid loops but allow multiple paths to same AS
+    def _propagate_intra_pcb(
+        self, pcb: PCB, current_as: int, isd: int, stats: Dict
+    ) -> set:
+        """Propagate PCB within ISD strictly top-down (parent→child).
+
+        SCION intra-ISD beaconing uses only the ``parent-child`` orientation of
+        a hierarchy edge: a core sends down to its direct children, which
+        re-broadcast to their own children. The ``child-parent`` direction (the
+        reverse half-edge) is **never** traversed during beaconing — it only
+        exists in the segment store via the symmetrically-derived up segment.
+
+        Peer links and core links are skipped here. The simulator keeps a
+        per-origin segment cap (``max_segments_per_origin``) so dense ISDs
+        cannot generate an unbounded number of segments per core.
+        """
         visited_paths = set()
-        queue = deque([(current_as, pcb, 0)])  # Add depth counter
-        reached_non_cores = set()
-        max_depth = 10  # Maximum propagation depth
+        queue = deque([(current_as, pcb, 0)])
+        reached_non_cores: set = set()
+        max_depth = 10
         pops = 0
+        segments_for_origin = 0
+        cap_per_origin = self.max_segments_per_origin
 
         while queue:
             if self._intra_segment_cap_hit:
@@ -365,151 +381,84 @@ class CorrectedBeaconSimulator:
                 if not self._intra_budget_warned:
                     self._intra_budget_warned = True
                     print(
-                        f"    Warning: intra-ISD propagation budget exhausted "
+                        "    Warning: intra-ISD propagation budget exhausted "
                         f"({self.max_intra_queue_pops} queue pops); stopping early."
                     )
                 break
+            if segments_for_origin >= cap_per_origin:
+                break
             pops += 1
             current, current_pcb, depth = queue.popleft()
-            
-            # Skip if too deep
+
             if depth >= max_depth:
                 continue
-                
-            current_isd = self.G.nodes[current]['isd']
-            
-            # Only propagate within same ISD
-            if current_isd != isd:
+            if self.G.nodes[current]['isd'] != isd:
                 continue
-                
-            # Create path signature to detect loops
+
             path_sig = tuple(h['as'] for h in current_pcb.path)
-            
-            # Check all neighbors (both outgoing and incoming edges)
-            # First, check outgoing edges
-            for neighbor in self.G.neighbors(current):
-                # Avoid loops - don't revisit an AS already in current path
+
+            for neighbor in self.G.successors(current):
                 if neighbor in path_sig:
                     continue
-                    
-                neighbor_isd = self.G.nodes[neighbor]['isd']
-                if neighbor_isd != isd:
-                    continue  # Don't cross ISD boundaries
-                    
-                # Get edge data
+                if self.G.nodes[neighbor]['isd'] != isd:
+                    continue
+
                 edge_data = self.G.get_edge_data(current, neighbor)
                 if not edge_data:
                     continue
-                    
-                # Find parent-child link
+
+                # Only ``parent-child`` (top-down) half-edges carry intra-ISD
+                # beacons. Skip ``child-parent`` (bottom-up) and ``peer``.
                 valid_edge = None
-                for edge_key, edge_info in edge_data.items():
-                    if edge_info['type'] == 'parent-child':
-                        # Current is parent, neighbor is child
+                for _, edge_info in edge_data.items():
+                    if edge_info.get('type') == 'parent-child':
                         valid_edge = edge_info
                         break
-                        
                 if not valid_edge:
                     continue
-                    
-                # Create new path signature
+
                 new_path_sig = path_sig + (neighbor,)
                 if new_path_sig in visited_paths:
-                    continue  # Already explored this exact path
+                    continue
                 visited_paths.add(new_path_sig)
-                    
-                # Create new PCB
+
                 new_pcb = current_pcb.copy()
-                
-                # Update last hop with egress
-                new_pcb.path[-1]['egress'] = valid_edge['u_if']
-                
-                # Add new hop
+                new_pcb.path[-1]['egress'] = valid_edge.get('u_if')
                 new_pcb.path.append({
                     'as': neighbor,
-                    'ingress': valid_edge['v_if'],
-                    'egress': None
+                    'ingress': valid_edge.get('v_if'),
+                    'egress': None,
                 })
-                
-                # Register segment for non-core ASes
-                neighbor_role = self.G.nodes[neighbor]['role']
-                if neighbor_role == 'non-core':
-                    self._register_intra_segment(new_pcb, isd, 'down', stats)
+
+                if self.G.nodes[neighbor]['role'] == 'non-core':
+                    if self._register_intra_segment(new_pcb, isd, 'down', stats):
+                        segments_for_origin += 1
                     reached_non_cores.add(neighbor)
-                    
-                # Continue propagation
+
                 queue.append((neighbor, new_pcb, depth + 1))
-            
-            # Also check incoming edges (where current might be child)
-            for predecessor in self.G.predecessors(current):
-                # Avoid loops
-                if predecessor in path_sig:
-                    continue
-                    
-                predecessor_isd = self.G.nodes[predecessor]['isd']
-                if predecessor_isd != isd:
-                    continue
-                    
-                # Get edge data (from predecessor to current)
-                edge_data = self.G.get_edge_data(predecessor, current)
-                if not edge_data:
-                    continue
-                    
-                # Find child-parent link (where current is parent of predecessor)
-                valid_edge = None
-                for edge_key, edge_info in edge_data.items():
-                    if edge_info['type'] == 'child-parent':
-                        # Predecessor is child, current is parent - so we can propagate to predecessor
-                        valid_edge = edge_info
-                        break
-                        
-                if not valid_edge:
-                    continue
-                    
-                # Create new path signature
-                new_path_sig = path_sig + (predecessor,)
-                if new_path_sig in visited_paths:
-                    continue
-                visited_paths.add(new_path_sig)
-                    
-                # Create new PCB
-                new_pcb = current_pcb.copy()
-                
-                # Update last hop with egress (swap interfaces for reverse direction)
-                new_pcb.path[-1]['egress'] = valid_edge['v_if']  # Current's interface
-                
-                # Add new hop
-                new_pcb.path.append({
-                    'as': predecessor,
-                    'ingress': valid_edge['u_if'],  # Predecessor's interface
-                    'egress': None
-                })
-                
-                # Register segment for non-core ASes
-                predecessor_role = self.G.nodes[predecessor]['role']
-                if predecessor_role == 'non-core':
-                    self._register_intra_segment(new_pcb, isd, 'down', stats)
-                    reached_non_cores.add(predecessor)
-                    
-                # Continue propagation
-                queue.append((predecessor, new_pcb, depth + 1))
-                
+
+                if segments_for_origin >= cap_per_origin:
+                    break
+
         return reached_non_cores
     
-    def _register_intra_segment(self, pcb: PCB, isd: int, 
-                               seg_type: str, stats: Dict):
-        """Register an intra-ISD segment"""
+    def _register_intra_segment(
+        self, pcb: PCB, isd: int, seg_type: str, stats: Dict
+    ) -> bool:
+        """Register an intra-ISD segment + its symmetric up segment.
+
+        Returns True if a new segment was registered (False on dedupe / cap hit).
+        """
         if len(self.segments['down'][isd]) >= self.max_intra_segments_per_isd:
             self._intra_segment_cap_hit = True
             if not self._intra_seg_cap_warned:
                 self._intra_seg_cap_warned = True
                 print(
-                    f"    Warning: intra-ISD segment cap reached "
+                    "    Warning: intra-ISD segment cap reached "
                     f"({self.max_intra_segments_per_isd} down segments per ISD)."
                 )
-            return
+            return False
 
-        # Create down segment
         down_segment = {
             'type': 'down',
             'src': pcb.originator,
@@ -518,26 +467,31 @@ class CorrectedBeaconSimulator:
             'path': [h['as'] for h in pcb.path],
             'isd': isd,
             'segment_id': pcb.segment_id + "_down",
-            'timestamp': time.time()
+            'timestamp': time.time(),
         }
-        dkey = (down_segment['src'], down_segment['dst'], tuple(down_segment['path']))
+        dkey = (
+            down_segment['src'],
+            down_segment['dst'],
+            tuple(down_segment['path']),
+        )
         if dkey in self._intra_down_keys_by_isd[isd]:
-            return
+            return False
         self._intra_down_keys_by_isd[isd].add(dkey)
 
         self.segments['down'][isd].append(down_segment)
         stats['down_segments'] += 1
-        
-        # Also create corresponding up segment (reverse)
+
         up_hops = []
         for i in range(len(pcb.path) - 1, -1, -1):
             h = pcb.path[i]
-            up_hops.append({
-                'as': h['as'],
-                'ingress': h['egress'],
-                'egress': h['ingress']
-            })
-            
+            up_hops.append(
+                {
+                    'as': h['as'],
+                    'ingress': h['egress'],
+                    'egress': h['ingress'],
+                }
+            )
+
         up_segment = {
             'type': 'up',
             'src': pcb.path[-1]['as'],
@@ -546,10 +500,11 @@ class CorrectedBeaconSimulator:
             'path': [h['as'] for h in up_hops],
             'isd': isd,
             'segment_id': pcb.segment_id + "_up",
-            'timestamp': time.time()
+            'timestamp': time.time(),
         }
         self.segments['up'][isd].append(up_segment)
         stats['up_segments'] += 1
+        return True
     
     def _convert_to_legacy_format(self) -> Dict:
         """Convert to format expected by PathFinder"""
@@ -563,25 +518,14 @@ class CorrectedBeaconSimulator:
 
 
 def run_corrected_simulation(topology_path: Path, output_dir: Path):
-    """Run the corrected beacon simulation"""
+    """Run the SCION beacon simulation and print summary stats."""
     simulator = CorrectedBeaconSimulator()
     segment_store, stats = simulator.simulate(topology_path, output_dir)
-    
+
     print("\n=== Simulation Complete ===")
     print("\nTotal segments discovered:")
     print(f"  Core: {stats['totals']['core_segments']}")
     print(f"  Up: {stats['totals']['up_segments']}")
     print(f"  Down: {stats['totals']['down_segments']}")
-    
+
     return segment_store, stats
-
-
-if __name__ == "__main__":
-    # Test with the generated topology
-    topology_path = Path("experiments/20250714_132635_test_n50/topology.pkl")
-    output_dir = Path("experiments/20250714_132635_test_n50/corrected_beaconing")
-    
-    if topology_path.exists():
-        run_corrected_simulation(topology_path, output_dir)
-    else:
-        print(f"Topology not found at {topology_path}")

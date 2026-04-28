@@ -140,26 +140,45 @@ print("="*80)
 print(f"{'Method':<20} {'Reward':<15} {'Latency (ms)':<15} {'Probes/Selection':<20} {'Reduction':<10}")
 print("-"*80)
 
-baseline_probes = np.mean([summary[m]['total_probes']/336 for m in summary if m != 'dqn'])
+def _per_selection(method_summary):
+    n = max(1, int(method_summary.get('n_selections', 336)))
+    return method_summary['total_probes'] / n
+
+
+baseline_probes = np.mean(
+    [_per_selection(summary[m]) for m in summary if m != 'dqn']
+)
 
 for method in methods_by_reward:
     reward = f"{summary[method]['reward_mean']:.3f} ± {summary[method]['reward_std']:.3f}"
     latency = f"{summary[method]['latency_mean']:.1f}"
-    probes = summary[method]['total_probes'] / 336
-    
+    probes = _per_selection(summary[method])
+
     if method == 'dqn':
-        reduction = f"{(baseline_probes - probes)/baseline_probes*100:.1f}%"
+        reduction = (
+            f"{(baseline_probes - probes) / baseline_probes * 100:.1f}%"
+            if baseline_probes
+            else "-"
+        )
     else:
         reduction = "-"
-    
-    print(f"{method_display_names[method]:<20} {reward:<15} {latency:<15} {probes:<20.1f} {reduction:<10}")
+
+    print(
+        f"{method_display_names[method]:<20} {reward:<15} {latency:<15} {probes:<20.1f} {reduction:<10}"
+    )
 
 # Create detailed probe breakdown figure
 fig3, ax = plt.subplots(1, 1, figsize=(COLUMN_WIDTH, 3))
 
 methods_ordered = ['dqn'] + [m for m in methods_by_reward if m != 'dqn']
-latency_probes = [summary[m]['latency_probes']/336 for m in methods_ordered]
-bandwidth_probes = [summary[m]['bandwidth_probes']/336 for m in methods_ordered]
+latency_probes = [
+    summary[m]['latency_probes'] / max(1, int(summary[m].get('n_selections', 336)))
+    for m in methods_ordered
+]
+bandwidth_probes = [
+    summary[m]['bandwidth_probes'] / max(1, int(summary[m].get('n_selections', 336)))
+    for m in methods_ordered
+]
 
 x = np.arange(len(methods_ordered))
 width = 0.35

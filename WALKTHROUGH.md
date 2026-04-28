@@ -112,23 +112,35 @@ All steps share a directory like `evaluation/run_YYYYMMDD_HHMMSS/`. **`run_full_
 
 ### Step 2 — `02_run_beaconing.py`
 
-- Loads **`topology/scion_topology.json`** (or legacy **`scion_topology.json`** at run root), rebuilds a **NetworkX** graph, converts JSON → a temporary **`topology_beacon_input.pkl`** via **`src.simulation.json_topology_adapter.json_topology_to_beacon_pickle`** (DataFrame shape expected by the beacon simulator).
-- Runs **`CorrectedBeaconSimulator`** from **`src.beacon.beacon_sim_v2`** (writes segment-like outputs under `beacon_output/`).
-- Enumerates candidate paths with **`src.simulation.path_builder.build_paths_for_pair`**, picks a diverse **(src, dst)** pair, fills **`InMemoryPathStore`**, and saves **`path_store.pkl`** and **`selected_pair.json`**.
+- Loads **`topology/scion_topology.pkl`** (preferred — same NetworkX graph as written by step 1) with a fall-through to **`topology/scion_topology.json`** for older runs. Reuses **`core_ases`** from the bundle so SCION segment-composition has accurate role information even if `node['role']` is missing.
+- Converts the graph → **`topology_beacon_input.pkl`** via **`src.simulation.json_topology_adapter.json_topology_to_beacon_pickle`**. The adapter now writes **two directed rows per undirected edge** (one `parent-child`, one `child-parent`) so the beacon simulator can enforce SCION's top-down propagation, and emits **PEER edges with `type='peer'`** (skipped during PCB propagation).
+- Runs **`CorrectedBeaconSimulator`** from **`src.beacon.beacon_sim_v2`** with strict SCION semantics:
+  - **Core beaconing** propagates only across `type='core'` half-edges.
+  - **Intra-ISD beaconing** propagates strictly **parent→child**; the reverse direction is never traversed during PCB flooding.
+  - **Per-origin fan-out cap** (`max_segments_per_origin`, override via `BEACON_MAX_SEGMENTS_PER_ORIGIN`) bounds segments per beacon-originating core, mirroring how real SCION beacon services keep top-K beacons.
+- Enumerates candidate paths via **`src.simulation.path_builder.build_scion_paths_for_pair(... , core_ases=...)`** (passes the core set explicitly so role detection works on BRITE topologies). Saves a **multi-pair path store** (`path_store.pkl`) and **`selected_pair.json`** which now includes a `pair_pool` for the downstream multi-pair training/evaluation.
 
 ### Step 3 — `03_simulate_traffic.py`
 
-- Reads topology, **selected pair**, `**path_store.pkl`**, generates 28 days of flow samples (hourly), builds `**traffic_flows.pkl`** and `**link_states.pkl**` for the same run directory.
+- Reads topology, the multi-pair `pair_pool`, **`path_store.pkl`**, and generates 28 days of flow samples for **every foreground pair**.
+- Models **background traffic** at every hour (random AS pairs drawn from the routable set, smaller per-flow demand) so links experience realistic shared load.
+- Aggregates load **per link** (`link_loads_mbps`), then derives each path's **bottleneck** latency-with-queueing, available bandwidth, utilization, and aggregate loss probability.
+- Writes both:
+  - **`link_states[hour]['by_pair']['pair_<src>_<dst>']['path_<idx>']`** — per-pair indexed metrics consumed by training/evaluation,
+  - **`link_states[hour]['path_<idx>']`** — flat per-path block for the legacy single-pair (kept for backwards compatibility).
 
 ### Step 4 — `04_train_dqn.py`
 
-- Loads topology JSON, pair, path store, traffic, link states.
-- Builds **`EvaluationPathSelectionEnv`** from **`src.simulation.evaluation_env`** (non-Gym adapter with `reset` / `step` / probing helpers aligned with the evaluation pipeline—not the Gymnasium `environment_*.py` stack).
-- Trains **`EnhancedDQNAgent`** from **`src.rl.dqn_agent_enhanced`**; saves **`dqn_model.pth`** (including optimizer/scheduler state for reload in step 5).
+- Loads topology, pair pool, path store, traffic, link states.
+- Builds **`EvaluationPathSelectionEnv`** from **`src.simulation.evaluation_env`** with **stateful episodes**: each `step` advances `hour_idx` by one and `done` fires after `episode_length` steps, so γ in the Bellman bootstrap actually contributes credit assignment.
+- **Multi-pair training**: each episode draws a random pair from the pool. The action dim is `max(num_paths)` over all pairs, with **action masking** hiding invalid actions per pair.
+- State features are computed from the **current pair's per-path metrics** (mean utilization, link-trust, congested-link share). Reward uses an adaptive goodput cap (`P95` of per-path static min bandwidth) so it stops saturating.
+- Trains **`EnhancedDQNAgent`** from **`src.rl.dqn_agent_enhanced`**; saves **`dqn_model.pth`** with `pair_pool`, `goodput_cap_mbps`, and reward weights so step 5 can recreate identical state/reward conventions.
 
 ### Step 5 — `05_evaluate_methods.py`
 
-- Reloads **`EvaluationPathSelectionEnv`**, the trained checkpoint, and runs **DQN** vs the six baselines imported directly from **`src.baselines.*`** (`ShortestPathSelector`, `WidestPathSelector`, `LowestLatencySelector`, `ECMPSelector`, `RandomSelector`, `SCIONDefaultSelector`).
+- Reloads **`EvaluationPathSelectionEnv`**, the trained checkpoint, and runs **DQN** vs the six baselines (`ShortestPathSelector`, `WidestPathSelector`, `LowestLatencySelector`, `ECMPSelector`, `RandomSelector`, `SCIONDefaultSelector`) over the **last 14 days × multiple pairs**.
+- Probe cost accounting is consistent across DQN and baselines (see **Probe semantics** below).
 
 ### Step 6 — `06_generate_figures.py`
 
@@ -202,6 +214,14 @@ Gymnasium **API**: `reset` returns `(observation, info)` and `step` returns `(ob
 
 **Interaction chain for the numbered pipeline**: **topology JSON + path_store + link_states + traffic_flows** → **`EvaluationPathSelectionEnv`** → **`EnhancedDQNAgent`** → **`dqn_model.pth`**. The Gymnasium env stack is a **parallel** API for experiments that load pickle topologies + segment stores + link tables.
 
+### Probe semantics (consistent across DQN and baselines)
+
+The lightweight env used by steps 4–5 separates **measured path metrics** from **probe overhead**, so latency in the result table reflects the network — not the cost of probing.
+
+- **`probe_path_latency(idx)`** returns the *measured* one-way latency (no probe overhead added) and reports the cost via **`env.last_probe_cost_ms`** (`base + per_hop * hops`).
+- **`probe_path_full(idx)`** returns latency, **dynamic** available bandwidth (from the current per-link load), and aggregate loss; the cost is reported the same way.
+- The env tracks **`total_probe_cost_ms`** so step 5 can attribute each method's probe overhead consistently. Baselines that only need latency (`shortest_path`, `lowest_latency`, `scion_default`, `random`) call `probe_path_latency`; `widest_path` and `ecmp` call `probe_path_full`. **DQN** does **selective probing**: only a single `probe_path_full` per selection.
+
 ## Configuration and environment
 
 - **Python**: Prefer **`uv sync --extra dev`** from repo root; use **`uv run python ...`** inside `evaluation/` for scripts (or **`uv run pytest`** from the repo root for tests).
@@ -224,7 +244,8 @@ These are common tripping points when extending the simulator or the learning st
 
 1. **Two topology shapes** — **`convert()`** (DataFrames + pickle) vs **`convert_brite_file()`** (NetworkX + JSON). The numbered pipeline is JSON-first; pickle/DataFrame flows remain for beacon input, traffic engine, and harness-style tooling.
 2. **Evaluation imports** — Keep **`04_train_dqn.py`** / **`05_evaluate_methods.py`** aligned with **`src.simulation.evaluation_env`** and **`src.rl.dqn_agent_enhanced`**; grep before refactors.
-3. **Two RL “worlds”** — Gymnasium envs under **`src/rl/environment_*.py`** vs the lightweight **`EvaluationPathSelectionEnv`** used by steps 4–5. Changes to state dimensions or reward definitions must stay consistent across both if you use both.
+3. **Two RL "worlds"** — Gymnasium envs under **`src/rl/environment_*.py`** vs the lightweight **`EvaluationPathSelectionEnv`** used by steps 4–5. Changes to state dimensions or reward definitions must stay consistent across both if you use both.
+4. **State featurization is replicated** — Step 4 and step 5 both define `_aggregate_state(env, hour_idx)` with the same features. If you change the state schema, update both files **and** ensure the saved `state_dim`/`action_dim` in `dqn_model.pth` matches.
 
 ---
 

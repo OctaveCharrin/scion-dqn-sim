@@ -14,7 +14,11 @@ from typing import Dict, List, Optional, Set, Tuple
 import networkx as nx
 import numpy as np
 
-from src.topology.topology_geo import assign_isds_kmeans_coordinates, save_topology_geography_png
+from src.topology.topology_geo import (
+    assign_isds_kmeans_coordinates,
+    euclidean_latency,
+    save_topology_geography_png,
+)
 
 
 class BRITE2SCIONConverter:
@@ -85,27 +89,48 @@ class BRITE2SCIONConverter:
                 "Step 1: Vanilla BRITE (layout + physical edges)",
             )
 
+        peer_seed = 42 if extra_peering_seed is None else int(extra_peering_seed)
+        # Single, seeded RNG drives every randomized step (core wiring, dense
+        # links, prune, peering). Module-level ``np.random`` was previously used
+        # in ``_add_dense_connections`` which made step 1 non-reproducible.
+        struct_rng = np.random.default_rng(peer_seed)
+
         isd_assignment = self._assign_isds(G, node_attrs)
         core_ases = self._select_core_ases(G, isd_assignment)
         self._ensure_core_connectivity(G, core_ases, isd_assignment)
         self._ensure_multi_parent_connectivity(G, core_ases, isd_assignment)
-        self._add_dense_connections(G, core_ases, isd_assignment)
+        self._add_dense_connections(G, core_ases, isd_assignment, rng=struct_rng)
         link_types = self._classify_links(G, core_ases, isd_assignment)
 
         for n in G.nodes():
             G.nodes[n]["isd"] = int(isd_assignment[n])
+            G.nodes[n]["role"] = "core" if int(n) in core_ases else "non-core"
 
         for u, v in G.edges():
             lt = link_types.get((u, v)) or link_types.get((v, u))
             if lt is None:
+                # Cross-ISD non-core BRITE-physical edges: classify as PEER.
+                # ``prune_cross_isd_noncore_fraction`` (below) thins these out
+                # before extra random peering injection.
                 lt = "peer"
-            delay = float(G[u][v].get("delay", 1.0))
-            bw = float(G[u][v].get("bandwidth", 10.0))
-            G[u][v]["type"] = lt.upper().replace("-", "_")
-            G[u][v]["latency"] = delay
-            G[u][v]["bandwidth"] = bw
-
-        peer_seed = 42 if extra_peering_seed is None else int(extra_peering_seed)
+            edge = G[u][v]
+            # Prefer an explicit ``latency`` set by the synthetic edge helpers
+            # (core mesh, multi-parent, dense, peering). For BRITE-original
+            # edges we recompute from plane distance so units stay consistent
+            # across all edges (BRITE's ``delay`` field is on an abstract scale
+            # that depends on the routing model and is not in milliseconds).
+            if "latency" in edge:
+                lat = float(edge["latency"])
+            else:
+                u_x = float(G.nodes[u].get("x", 0.0))
+                u_y = float(G.nodes[u].get("y", 0.0))
+                v_x = float(G.nodes[v].get("x", 0.0))
+                v_y = float(G.nodes[v].get("y", 0.0))
+                lat = euclidean_latency(u_x, u_y, v_x, v_y)
+            bw = float(edge.get("bandwidth", 10.0))
+            edge["type"] = lt.upper().replace("-", "_")
+            edge["latency"] = lat
+            edge["bandwidth"] = bw
 
         if prune_cross_isd_noncore_fraction and prune_cross_isd_noncore_fraction > 0:
             pseed = (
@@ -194,17 +219,24 @@ class BRITE2SCIONConverter:
             if src == dst or G.has_edge(src, dst):
                 continue
 
-            # SCION Reality: Peering usually happens between geographically close ASes (IXPs / local colos).
-            # Instead of uniformly random peering, we use exponential decay based on distance.
+            # SCION peer links typically materialize at IXPs / local colos so we
+            # bias acceptance toward geographically close pairs. The exponential
+            # decay constant is expressed as a fraction of the layout extent so
+            # the heuristic adapts to BRITE (HS=1000) and top-down (1000x1000)
+            # planes without retuning.
             pos1 = (G.nodes[src].get("x", 0), G.nodes[src].get("y", 0))
             pos2 = (G.nodes[dst].get("x", 0), G.nodes[dst].get("y", 0))
-            geo_dist = np.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
-
-            # Acceptance probability heavily favors closer nodes
-            prob = np.exp(-geo_dist / 250.0)
+            geo_dist = float(
+                np.sqrt((pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2)
+            )
+            decay = self._estimate_layout_extent(G) * 0.25
+            prob = float(np.exp(-geo_dist / max(decay, 1.0)))
             if rng.random() > prob:
                 continue
 
+            lat = euclidean_latency(
+                float(pos1[0]), float(pos1[1]), float(pos2[0]), float(pos2[1])
+            )
             G.add_edge(
                 src,
                 dst,
@@ -212,11 +244,28 @@ class BRITE2SCIONConverter:
                 dst_if=interface_id + 1,
                 type="PEER",
                 bandwidth=float(rng.uniform(5000, 10000)),
-                latency=float(rng.uniform(5, 25)),
+                latency=lat,
             )
             interface_id += 2
             added += 1
         return added
+
+    @staticmethod
+    def _estimate_layout_extent(G: nx.Graph) -> float:
+        """Approximate the size of the (x, y) plane used by a topology layout.
+
+        Used to scale geographic decay constants without hard-coding a BRITE
+        ``HS`` value. Returns at least 1.0 to keep the exponent finite.
+        """
+        xs: List[float] = []
+        ys: List[float] = []
+        for _, data in G.nodes(data=True):
+            if "x" in data and "y" in data:
+                xs.append(float(data["x"]))
+                ys.append(float(data["y"]))
+        if not xs or not ys:
+            return 1000.0
+        return max(1.0, max(max(xs) - min(xs), max(ys) - min(ys)))
 
     def _prune_cross_isd_noncore_edges(
         self,
@@ -311,6 +360,11 @@ class BRITE2SCIONConverter:
                         u = int(parts[1])
                         v = int(parts[2])
                         dist = float(parts[3])
+                        # BRITE's ``delay`` column is on an abstract scale that
+                        # depends on the routing model. We derive latency from
+                        # the layout distance (``euclidean_latency``) once we
+                        # have node coordinates; here we keep the raw value as
+                        # a fallback in case coords are missing.
                         delay = float(parts[4])
                         bw = float(parts[5])
                         G.add_edge(u, v, bandwidth=bw, delay=delay, length=dist)
@@ -384,8 +438,19 @@ class BRITE2SCIONConverter:
                     u = cores[i]
                     v = cores[j]
                     if not G.has_edge(u, v):
-                        # Add intra-ISD core link
-                        G.add_edge(u, v, bandwidth=100000.0, virtual=True)
+                        lat = euclidean_latency(
+                            float(G.nodes[u].get("x", 0.0)),
+                            float(G.nodes[u].get("y", 0.0)),
+                            float(G.nodes[v].get("x", 0.0)),
+                            float(G.nodes[v].get("y", 0.0)),
+                        )
+                        G.add_edge(
+                            u,
+                            v,
+                            bandwidth=100000.0,
+                            latency=lat,
+                            virtual=True,
+                        )
                         print(f"    Added intra-ISD core link: {u} <-> {v}")
                         added += 1
             if added == 0:
@@ -414,7 +479,19 @@ class BRITE2SCIONConverter:
                 if best_pair:
                     u, v = best_pair
                     if not G.has_edge(u, v):
-                        G.add_edge(u, v, bandwidth=50000.0, virtual=True)
+                        lat = euclidean_latency(
+                            float(G.nodes[u].get("x", 0.0)),
+                            float(G.nodes[u].get("y", 0.0)),
+                            float(G.nodes[v].get("x", 0.0)),
+                            float(G.nodes[v].get("y", 0.0)),
+                        )
+                        G.add_edge(
+                            u,
+                            v,
+                            bandwidth=50000.0,
+                            latency=lat,
+                            virtual=True,
+                        )
                         print(f"    Added inter-ISD core link: {u} <-> {v}")
 
     def _ensure_multi_parent_connectivity(
@@ -486,7 +563,19 @@ class BRITE2SCIONConverter:
 
                         # Only add if geographically reasonable
                         if geo_dist < 400:  # Reasonable distance threshold
-                            G.add_edge(node, parent, bandwidth=1000.0, virtual=True)
+                            lat = euclidean_latency(
+                                float(node_pos[0]),
+                                float(node_pos[1]),
+                                float(parent_pos[0]),
+                                float(parent_pos[1]),
+                            )
+                            G.add_edge(
+                                node,
+                                parent,
+                                bandwidth=1000.0,
+                                latency=lat,
+                                virtual=True,
+                            )
                             added_connections += 1
                             print(f"    Added multi-parent link: {node} -> {parent}")
 
@@ -556,7 +645,23 @@ class BRITE2SCIONConverter:
                                 candidates[i][2] < 500
                             ):  # Increased geographic distance threshold
                                 best = candidates[i][0]
-                                G.add_edge(node, best, bandwidth=2000.0, virtual=True)
+                                best_pos = (
+                                    G.nodes[best].get("x", 0),
+                                    G.nodes[best].get("y", 0),
+                                )
+                                lat = euclidean_latency(
+                                    float(node_pos[0]),
+                                    float(node_pos[1]),
+                                    float(best_pos[0]),
+                                    float(best_pos[1]),
+                                )
+                                G.add_edge(
+                                    node,
+                                    best,
+                                    bandwidth=2000.0,
+                                    latency=lat,
+                                    virtual=True,
+                                )
                                 added_connections += 1
                                 print(
                                     f"    Added parent {len(parents) + i + 1}: {node} -> {best}"
@@ -565,10 +670,21 @@ class BRITE2SCIONConverter:
         print(f"    Total multi-parent connections added: {added_connections}")
 
     def _add_dense_connections(
-        self, G: nx.Graph, core_ases: set, isd_assignment: Dict
+        self,
+        G: nx.Graph,
+        core_ases: set,
+        isd_assignment: Dict,
+        rng: Optional[np.random.Generator] = None,
     ) -> None:
-        """Add additional cross-connections for dense topology with many paths"""
+        """Add additional cross-connections for dense topology with many paths.
+
+        ``rng`` should be a seeded ``numpy.random.Generator`` so the densification
+        is reproducible from the YAML ``seed``. A default-seeded RNG is used if
+        the caller passes ``None`` (kept for backwards compatibility).
+        """
         print("  Adding dense cross-connections...")
+        if rng is None:
+            rng = np.random.default_rng(42)
         added_connections = 0
 
         # Group ASes by ISD and distance from core
@@ -605,11 +721,18 @@ class BRITE2SCIONConverter:
                             )
 
                             # Add connection with probability based on distance
-                            if geo_dist < 200 and np.random.random() < 0.15:
+                            if geo_dist < 200 and rng.random() < 0.15:
+                                lat = euclidean_latency(
+                                    float(pos1[0]),
+                                    float(pos1[1]),
+                                    float(pos2[0]),
+                                    float(pos2[1]),
+                                )
                                 G.add_edge(
                                     as1,
                                     as2,
                                     bandwidth=1000.0,
+                                    latency=lat,
                                     virtual=True,
                                     cross_connect=True,
                                 )
@@ -645,11 +768,18 @@ class BRITE2SCIONConverter:
                                     (pos1[0] - pos2[0]) ** 2 + (pos1[1] - pos2[1]) ** 2
                                 )
 
-                                if geo_dist < 250 and np.random.random() < 0.1:
+                                if geo_dist < 250 and rng.random() < 0.1:
+                                    lat = euclidean_latency(
+                                        float(pos1[0]),
+                                        float(pos1[1]),
+                                        float(pos2[0]),
+                                        float(pos2[1]),
+                                    )
                                     G.add_edge(
                                         as1,
                                         as2,
                                         bandwidth=1000.0,
+                                        latency=lat,
                                         virtual=True,
                                         shortcut=True,
                                     )

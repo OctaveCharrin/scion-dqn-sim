@@ -6,11 +6,11 @@ Note: This is a work in progress and some components are not yet fully implement
 
 ## Features
 
-- **BRITE-based topology generation**: AS-level SCION-style graphs from the BRITE Java generator
-- **Control-plane style beaconing**: Beacon simulation and path enumeration for evaluation runs
-- **Traffic simulation**: 28 days of hourly flows with diurnal and weekly patterns
-- **Deep reinforcement learning**: DQN training with selective probing
-- **Performance metrics and figures**: Method comparison and Matplotlib exports (PNG)
+- **BRITE-based topology generation**: AS-level SCION-style graphs from the BRITE Java generator (or a pure-Python `top_down` alternative)
+- **SCION-realistic control plane**: top-down (parent→child) intra-ISD beaconing, core-mesh beaconing, peer links excluded from PCB propagation, per-origin fan-out caps
+- **Multi-pair traffic simulation**: 28 days of hourly foreground flows for every routable AS pair, plus randomly-drawn background traffic with **per-link aggregation** so paths share bottlenecks
+- **Stateful, multi-pair RL training**: episodic environment that advances `hour_idx` per step, action masking to handle variable per-pair path counts, real per-pair link-state featurization (no hardcoded placeholders)
+- **Selective probing accounting**: probe overhead is reported separately from measured latency, so result tables reflect the network rather than probe cost
 - **Baseline comparisons**: Shortest path, widest path, lowest latency, ECMP, random, and SCION default selectors
 - **Topology visualization**: Full dashboard or geographic map from `topology/scion_topology.json` (or topology pickle in the same folder)
 
@@ -70,12 +70,12 @@ The orchestrator and numbered scripts share helpers in **`evaluation/_common.py`
 
 **Steps executed:**
 
-1. **`01_generate_topology.py`** — Reads **`evaluation/topology_defaults.yaml`** (override with **`--topology-config PATH`**). Set **`generator: brite`** (default) or **`generator: top_down`**. Writes **`topology/scion_topology.{json,pkl}`**, **`topology/topology_config_resolved.yaml`** (effective merged config), and under **`topology/`** either BRITE artifacts + three **`step*.png`** snapshots, or (top-down) a Python-built graph plus three **`step*_top_down_*.png`** snapshots when **`output.save_step_pngs`** is true.
-2. **`02_run_beaconing.py`** — Beacon simulation input + path store + selected AS pair.
-3. **`03_simulate_traffic.py`** — 28 days of traffic + per-hour link states.
-4. **`04_train_dqn.py`** — DQN training on the first 14 days.
-5. **`05_evaluate_methods.py`** — Baselines + DQN on the last 14 days.
-6. **`06_generate_figures.py`** — Comparison figures as **PNG** (and the same plots used in the paper-style layout; PDF is not required for the default pipeline).
+1. **`01_generate_topology.py`** — Reads **`evaluation/topology_defaults.yaml`** (override with **`--topology-config PATH`**). Set **`generator: brite`** (default) or **`generator: top_down`**. Writes **`topology/scion_topology.{json,pkl}`** with `node['role']` set, **`topology/topology_config_resolved.yaml`** (effective merged config), and under **`topology/`** either BRITE artifacts + three **`step*.png`** snapshots, or (top-down) a Python-built graph plus three **`step*_top_down_*.png`** snapshots when **`output.save_step_pngs`** is true.
+2. **`02_run_beaconing.py`** — Runs the SCION beacon simulator (top-down intra-ISD propagation, core-mesh beaconing, PEER edges skipped). Writes **`path_store.pkl`** with paths for **multiple AS pairs** (`pair_pool`) plus a legacy **`selected_pair.json`** for the diverse "best" pair.
+3. **`03_simulate_traffic.py`** — Generates 28 days of hourly foreground demand for every routable pair, draws random background traffic per hour, and aggregates load **per link** so paths share bottlenecks. Writes **`link_states.pkl`** keyed by hour and pair.
+4. **`04_train_dqn.py`** — Multi-pair DQN training on the first 14 days. Stateful episodes (γ matters), action masking, real per-pair link-state featurization. Goodput cap auto-derived from path bandwidths so the reward stops saturating.
+5. **`05_evaluate_methods.py`** — Baselines + DQN over the last 14 days × the pair pool. Probe cost is reported via `env.last_probe_cost_ms` so DQN and baselines are compared on the same accounting.
+6. **`06_generate_figures.py`** — Comparison figures (PNG). Probe-per-selection numbers are computed from `n_selections` in the results JSON, not a hardcoded constant.
 
 **Faster / toy BRITE size** (optional): large topologies take longer in step 1. For a smoke test, set the node count before step 1 (or before the full orchestrator, since step 1 reads this variable):
 
@@ -151,16 +151,22 @@ Tests live under **`tests/`** and are configured via **`[tool.pytest.ini_options
 
 The evaluation step compares:
 
-- **Reward**: Composite metric combining goodput, latency, and loss
-- **Latency**: Mean and percentiles (ms)
-- **Bandwidth**: Mbps
-- **Probe overhead**: Count and time cost of latency vs bandwidth probes  
-  - Latency probes: 10 ms base + 0.5 ms per hop  
+- **Reward**: Composite metric `r = 2·(w1·G + w2·T) − 1` where `G` is normalized goodput against an auto-detected per-topology cap and `T` is a link-trust score (`1 − w3·loss − w4·delay/100`)
+- **Latency**: Mean and percentiles (ms) of the *measured* path latency (probe overhead is **not** added in)
+- **Bandwidth**: Mbps measured on the chosen path's bottleneck
+- **Probe overhead**: Count and wall-clock cost of latency vs bandwidth probes
+  - Latency probes: 10 ms base + 0.5 ms per hop
   - Bandwidth probes: 100 ms base + 20 ms per hop
-- **Selection time**: Wall-clock time to choose a path in the simulator loop
-- **Probe reduction**: DQN vs average baseline probe load
+- **Selection time**: Wall-clock time spent inside the policy / harness for one path choice
+- **Probe reduction**: DQN vs average baseline probe load (also reported as time reduction)
 
-The DQN uses **selective probing** (probing tied to the chosen path), while the scripted baselines probe according to each method’s needs in **`05_evaluate_methods.py`**.
+The DQN uses **selective probing** (one full probe of the chosen path per selection); the scripted baselines probe according to each method's needs in **`05_evaluate_methods.py`**.
+
+### Key knobs (env vars)
+
+- **`EVAL_BRITE_N_NODES`** — overrides BRITE node count for fast smoke runs.
+- **`DQN_TRAIN_EPISODES`** — overrides the auto-scaled training episode count in `04_train_dqn.py` / `04_train_simple_dqn.py`.
+- **`BEACON_INTRA_MAX_POPS`**, **`BEACON_MAX_INTRA_SEGMENTS_PER_ISD`**, **`BEACON_MAX_SEGMENTS_PER_ORIGIN`** — bound beacon-simulator work on dense topologies.
 
 ### Programmatic examples
 
