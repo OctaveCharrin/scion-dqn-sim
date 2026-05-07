@@ -9,7 +9,6 @@ Modules
     BRITE ``.brite`` → evaluation graph / SCION-style metadata.
 ``topology_geo``
     Shared k-means ISD assignment, core ring connectivity, latency helpers, and
-    geography PNG export (used by BRITE and top-down paths).
-``top_down_generator``
+    geography PNG export (used by BRITE paths).
     Pure-Python ``TopDownSCIONGenerator`` (no BRITE JAR).
 """

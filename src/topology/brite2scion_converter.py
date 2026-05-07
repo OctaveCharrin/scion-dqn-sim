@@ -222,7 +222,7 @@ class BRITE2SCIONConverter:
             # SCION peer links typically materialize at IXPs / local colos so we
             # bias acceptance toward geographically close pairs. The exponential
             # decay constant is expressed as a fraction of the layout extent so
-            # the heuristic adapts to BRITE (HS=1000) and top-down (1000x1000)
+            # the heuristic adapts to BRITE (HS=1000)
             # planes without retuning.
             pos1 = (G.nodes[src].get("x", 0), G.nodes[src].get("y", 0))
             pos2 = (G.nodes[dst].get("x", 0), G.nodes[dst].get("y", 0))

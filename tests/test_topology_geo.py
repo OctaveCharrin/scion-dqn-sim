@@ -11,7 +11,6 @@ from src.topology.topology_geo import (
     assign_isds_kmeans_coordinates,
     select_cores_by_centroid_proximity,
 )
-from src.topology.top_down_generator import TopDownSCIONGenerator
 
 
 def test_kmeans_assigns_all_nodes() -> None:
@@ -44,6 +43,3 @@ def test_inter_isd_ring_connects_cores() -> None:
 
 
 @pytest.mark.parametrize("seed", range(15))
-def test_top_down_global_connectivity(seed: int) -> None:
-    d = TopDownSCIONGenerator(seed=seed).generate(n_isds=5, n_nodes=80)
-    assert nx.is_connected(d["graph"])

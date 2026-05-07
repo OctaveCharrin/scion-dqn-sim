@@ -1,5 +1,5 @@
 """
-Shared geographic helpers for topology generation (BRITE and top-down).
+Shared geographic helpers for topology generation (BRITE).
 
 Centralises: k-means ISD assignment (same idea as ``BRITE2SCIONConverter``),
 inter-ISD **core ring** connectivity, edge latency from plane distance, and

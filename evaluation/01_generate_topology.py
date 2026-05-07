@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate SCION evaluation topology (BRITE + converter, or pure Python top-down).
+Generate SCION evaluation topology (BRITE + converter).
 
 All artifacts written under ``<run_dir>/topology/`` (JSON, pickle, plots, BRITE
 inputs when applicable). A **single YAML config** selects the generator and
@@ -25,7 +25,6 @@ from _common import topology_dir
 
 from src.topology.brite2scion_converter import BRITE2SCIONConverter
 from src.topology.brite_cfg_gen import BRITEConfigGenerator, run_brite
-from src.topology.top_down_generator import TopDownSCIONGenerator
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -93,28 +92,6 @@ def _coalesce_int(*vals: Any) -> Optional[int]:
     return None
 
 
-def _run_top_down(cfg: Dict[str, Any], topo_dir: Path, save_png: bool) -> Dict[str, Any]:
-    root_seed = _get(cfg, "seed", default=None)
-    td = _get(cfg, "top_down", default={}) or {}
-    gp = _get(td, "geographic_peering", default={}) or {}
-
-    gen = TopDownSCIONGenerator(seed=root_seed)
-    plot_dir = topo_dir if save_png else None
-    scion_topo = gen.generate(
-        n_isds=int(_get(td, "n_isds", default=3)),
-        n_nodes=int(_get(td, "n_nodes", default=100)),
-        geographic_peering_distance_cap=_get(gp, "distance_cap"),
-        geographic_peering_probability=_get(gp, "probability"),
-        additional_random_peering_max_links=int(
-            _get(td, "additional_random_peering_max_links", default=0)
-        ),
-        additional_random_peering_seed=_get(td, "additional_random_peering_seed"),
-        plot_dir=plot_dir,
-    )
-
-    return scion_topo
-
-
 def _run_brite(cfg: Dict[str, Any], topo_dir: Path, brite_path: Path, save_png: bool) -> Dict[str, Any]:
     br = _get(cfg, "brite", default={}) or {}
     conv_cfg = _get(br, "scion_converter", default={}) or {}
@@ -180,7 +157,7 @@ def _run_brite(cfg: Dict[str, Any], topo_dir: Path, brite_path: Path, save_png: 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate SCION topology from unified YAML (BRITE or top-down)."
+        description="Generate SCION topology from unified YAML (BRITE)."
     )
     parser.add_argument(
         "run_dir",
@@ -229,13 +206,8 @@ def main() -> None:
 
     save_png = bool(_get(cfg, "output", "save_step_pngs", default=True))
     generator = str(_get(cfg, "generator", default="brite")).lower().replace("-", "_")
-    if generator in ("topdown", "top_down", "python", "native"):
-        generator = "top_down"
 
-    if generator == "top_down":
-        print("\n=== Topology generator: top_down (pure Python) ===\n")
-        scion_topo = _run_top_down(cfg, topo_dir, save_png)
-    elif generator == "brite":
+    if generator == "brite":
         print("\n=== Topology generator: brite ===\n")
         br_rel = _get(cfg, "brite", "brite_path", default="external/brite")
         br_path = Path(str(br_rel))
@@ -243,7 +215,7 @@ def main() -> None:
             br_path = (REPO_ROOT / br_path).resolve()
         scion_topo = _run_brite(cfg, topo_dir, br_path, save_png)
     else:
-        raise SystemExit(f"Unknown generator: {generator!r} (use 'brite' or 'top_down')")
+        raise SystemExit(f"Unknown generator: {generator!r} (only 'brite' is supported)")
 
     G = scion_topo["graph"]
 

@@ -26,7 +26,6 @@ sub-dict so multi-pair training can index by pair.
 from __future__ import annotations
 
 import json
-import os
 import pickle
 import random
 from collections import defaultdict
@@ -37,9 +36,8 @@ from typing import Dict, List, Tuple
 import networkx as nx
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-
 from _common import resolve_run_dir, topology_dir
+from tqdm import tqdm
 
 run_dir = resolve_run_dir()
 run_path = Path(run_dir)
@@ -82,8 +80,7 @@ src_as = int(selected_pair["source_as"])
 dst_as = int(selected_pair["destination_as"])
 
 pair_pool: List[Tuple[int, int]] = [
-    (int(p[0]), int(p[1]))
-    for p in selected_pair.get("pair_pool", [[src_as, dst_as]])
+    (int(p[0]), int(p[1])) for p in selected_pair.get("pair_pool", [[src_as, dst_as]])
 ]
 if not pair_pool:
     pair_pool = [(src_as, dst_as)]
@@ -261,7 +258,9 @@ def _path_static_min_bw(path: Dict) -> float:
     val = sm.get("min_bandwidth")
     if val is not None:
         return float(val)
-    return min((float(h.get("bandwidth", 1e6)) for h in path.get("hops", [])), default=1e6)
+    return min(
+        (float(h.get("bandwidth", 1e6)) for h in path.get("hops", [])), default=1e6
+    )
 
 
 def _path_static_latency(path: Dict) -> float:
@@ -430,7 +429,9 @@ print(f"  - Total days:              {NUM_DAYS}")
 print(f"  - Foreground pairs:        {len(paths_by_pair)}")
 print(f"  - Background pairs/hour:   {BACKGROUND_PAIRS_PER_HOUR}")
 print(f"  - Total foreground flows:  {len(flows)}")
-print(f"  - Average bandwidth (sel): {np.mean([f['bandwidth_mbps'] for f in selected_flow_series]):.2f} Mbps")
+print(
+    f"  - Average bandwidth (sel): {np.mean([f['bandwidth_mbps'] for f in selected_flow_series]):.2f} Mbps"
+)
 print(f"  - Training period: Days 1-14 ({14 * SAMPLES_PER_DAY} samples)")
 print(f"  - Evaluation period: Days 15-28 ({14 * SAMPLES_PER_DAY} samples)")
 

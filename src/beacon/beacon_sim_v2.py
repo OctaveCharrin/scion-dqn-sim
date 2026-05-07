@@ -19,6 +19,7 @@ support a per-originator fan-out cap (``max_segments_per_origin``) and a
 BFS-pop budget (``max_intra_queue_pops``).
 """
 
+import json
 import os
 import pickle
 import time
@@ -146,6 +147,13 @@ class CorrectedBeaconSimulator:
         # Save detailed segments with metadata
         with open(output_dir / "segments_detailed.pkl", "wb") as f:
             pickle.dump(self.segments, f)
+
+        with open(output_dir / "segments_corrected.json", "w") as f:
+            json.dump(segment_store, f)
+
+        # Save detailed segments with metadata
+        with open(output_dir / "segments_detailed.json", "w") as f:
+            json.dump(self.segments, f)
 
         # Generate statistics
         stats = {
