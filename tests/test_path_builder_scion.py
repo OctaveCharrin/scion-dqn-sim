@@ -19,10 +19,10 @@ def _diamond() -> nx.Graph:
     G = nx.Graph()
     for n in range(4):
         G.add_node(n, isd=0, x=float(n), y=0.0)
-    G.add_edge(0, 1, type="PARENT_CHILD", latency=10.0, bandwidth=1000.0)
-    G.add_edge(0, 2, type="PARENT_CHILD", latency=10.0, bandwidth=1000.0)
-    G.add_edge(1, 3, type="PARENT_CHILD", latency=10.0, bandwidth=1000.0)
-    G.add_edge(2, 3, type="PARENT_CHILD", latency=10.0, bandwidth=1000.0)
+    G.add_edge(0, 1, type="parent_child", latency=10.0, bandwidth=1000.0)
+    G.add_edge(0, 2, type="parent_child", latency=10.0, bandwidth=1000.0)
+    G.add_edge(1, 3, type="parent_child", latency=10.0, bandwidth=1000.0)
+    G.add_edge(2, 3, type="parent_child", latency=10.0, bandwidth=1000.0)
     return G
 
 
@@ -61,10 +61,10 @@ def test_build_scion_paths_uses_core_ases_when_role_missing():
         (11, 1, 1.0, 1.0),
     ]:
         G.add_node(nid, isd=isd, x=x, y=y)
-    G.add_edge(0, 1, type="PARENT_CHILD", latency=5.0, bandwidth=1000.0)
-    G.add_edge(1, 2, type="PARENT_CHILD", latency=5.0, bandwidth=1000.0)
-    G.add_edge(0, 10, type="CORE", latency=20.0, bandwidth=10000.0)
-    G.add_edge(10, 11, type="PARENT_CHILD", latency=5.0, bandwidth=1000.0)
+    G.add_edge(0, 1, type="parent_child", latency=5.0, bandwidth=1000.0)
+    G.add_edge(1, 2, type="parent_child", latency=5.0, bandwidth=1000.0)
+    G.add_edge(0, 10, type="core", latency=20.0, bandwidth=10000.0)
+    G.add_edge(10, 11, type="parent_child", latency=5.0, bandwidth=1000.0)
 
     segment_store = {"core": [], "up": {}, "down": {}}
     paths = build_scion_paths_for_pair(

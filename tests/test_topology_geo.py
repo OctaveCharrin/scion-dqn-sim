@@ -35,8 +35,8 @@ def test_inter_isd_ring_connects_cores() -> None:
         G.add_node(nid, x=x, y=y, isd=isd, role="core")
     isd_of = {i: G.nodes[i]["isd"] for i in range(4)}
     cores = {0, 1, 2, 3}
-    G.add_edge(0, 1, type="CORE", latency=1.0, bandwidth=10_000.0)
-    G.add_edge(2, 3, type="CORE", latency=1.0, bandwidth=10_000.0)
+    G.add_edge(0, 1, type="core", latency=1.0, bandwidth=10_000.0)
+    G.add_edge(2, 3, type="core", latency=1.0, bandwidth=10_000.0)
     n = add_inter_isd_core_ring_edges(G, isd_of, cores)
     assert n >= 1
     assert nx.is_connected(G)

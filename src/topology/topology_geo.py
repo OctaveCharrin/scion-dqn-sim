@@ -117,7 +117,7 @@ def add_inter_isd_core_ring_edges(
         lat = euclidean_latency(
             float(du["x"]), float(du["y"]), float(dv["x"]), float(dv["y"])
         )
-        G.add_edge(u, v, type="CORE", latency=lat, bandwidth=bandwidth)
+        G.add_edge(u, v, type="core", latency=lat, bandwidth=bandwidth)
         added += 1
     return added
 
@@ -180,10 +180,10 @@ def save_topology_geography_png(
                     pos[ni] = (float(spr[n][0]), float(spr[n][1]))
 
     edge_color_map = {
-        "CORE": "#e74c3c",
-        "PARENT_CHILD": "#3498db",
+        "core": "#e74c3c",
+        "parent_child": "#3498db",
         "CHILD_PARENT": "#85c1e9",
-        "PEER": "#27ae60",
+        "peer": "#27ae60",
         "peer": "#27ae60",
     }
 
@@ -192,7 +192,7 @@ def save_topology_geography_png(
         d = G[u][v]
         et = str(d.get("type", ""))
         ec = edge_color_map.get(et, "#bdc3c7")
-        w = 2.0 if et in ("CORE", "PEER", "peer") else 1.0
+        w = 2.0 if et in ("core", "peer", "peer") else 1.0
         if u in pos and v in pos:
             ax.plot(
                 [pos[u][0], pos[v][0]],

@@ -53,12 +53,12 @@ def _collapse_to_simple_undirected(G: nx.Graph) -> nx.Graph:
         H.add_node(int(n), **attr)
 
     priority = {
-        "PEER": 0,
+        "peer": 0,
         "peer": 0,
         "core": 1,
-        "CORE": 1,
+        "core": 1,
         "parent-child": 2,
-        "PARENT_CHILD": 2,
+        "parent_child": 2,
         "child-parent": 2,
         "CHILD_PARENT": 2,
     }
@@ -186,13 +186,13 @@ class TopologyVisualizer:
     # (``convert_brite_file`` uses SCREAMING_SNAKE, e.g. ``PARENT_CHILD``).
     LINK_STYLES = {
         "core": {"color": "#E74C3C", "width": 3.0, "style": "-"},
-        "CORE": {"color": "#E74C3C", "width": 3.0, "style": "-"},
+        "core": {"color": "#E74C3C", "width": 3.0, "style": "-"},
         "parent-child": {"color": "#3498DB", "width": 2.0, "style": "-"},
-        "PARENT_CHILD": {"color": "#3498DB", "width": 2.0, "style": "-"},
+        "parent_child": {"color": "#3498DB", "width": 2.0, "style": "-"},
         "child-parent": {"color": "#3498DB", "width": 2.0, "style": "--"},
         "CHILD_PARENT": {"color": "#3498DB", "width": 2.0, "style": "--"},
         "peer": {"color": "#27AE60", "width": 1.5, "style": ":"},
-        "PEER": {"color": "#1e8449", "width": 2.0, "style": "-"},
+        "peer": {"color": "#1e8449", "width": 2.0, "style": "-"},
         "UNKNOWN": {"color": "#95a5a6", "width": 1.0, "style": "-"},
     }
     DEFAULT_LINK_STYLE = {"color": "#7f8c8d", "width": 1.2, "style": "-"}
@@ -592,7 +592,7 @@ class TopologyVisualizer:
     def _create_core_network(self, ax, node_df: pd.DataFrame, edge_df: pd.DataFrame):
         """Visualize only the core network"""
         core_nodes = node_df[node_df["role"] == "core"]["as_id"].astype(int).tolist()
-        core_edges = edge_df[edge_df["type"].isin(("core", "CORE"))]
+        core_edges = edge_df[edge_df["type"].isin(("core", "core"))]
         
         # Create core graph
         G = nx.Graph()
@@ -652,13 +652,13 @@ class TopologyVisualizer:
                 et = str(edge["type"])
                 link_value = {
                     "core": 4,
-                    "CORE": 4,
+                    "core": 4,
                     "parent-child": 3,
-                    "PARENT_CHILD": 3,
+                    "parent_child": 3,
                     "child-parent": 2,
                     "CHILD_PARENT": 2,
                     "peer": 1,
-                    "PEER": 1,
+                    "peer": 1,
                 }.get(et, 0)
                 
                 matrix[i, j] = link_value

@@ -39,6 +39,8 @@ import pandas as pd
 from _common import resolve_run_dir, topology_dir
 from tqdm import tqdm
 
+from src.simulation.path_store import InMemoryPathStore
+
 run_dir = resolve_run_dir()
 run_path = Path(run_dir)
 
@@ -57,8 +59,9 @@ with open(_topo_json, "r") as f:
 with open(run_path / "selected_pair.json", "r") as f:
     selected_pair = json.load(f)
 
-with open(run_path / "path_store.pkl", "rb") as f:
-    path_store = pickle.load(f)
+path_store = InMemoryPathStore.load(run_path / "path_store.json")
+# Removed open block
+    
 
 # Reuse the pickle for the rich graph (with edge bandwidth / latency).
 pkl_paths = [

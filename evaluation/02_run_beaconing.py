@@ -20,7 +20,6 @@ import networkx as nx
 from _common import resolve_run_dir, topology_dir
 
 from src.beacon.beacon_sim_v2 import CorrectedBeaconSimulator
-from src.simulation.json_topology_adapter import json_topology_to_beacon_pickle
 from src.simulation.path_store import InMemoryPathStore
 from src.simulation.path_builder import build_scion_paths_for_pair
 
@@ -60,17 +59,12 @@ else:
 print(f"\nLoaded topology with {G.number_of_nodes()} ASes")
 print(f"  Core ASes: {len(core_ases)}")
 
-# 1) Topology pickle for the beacon simulator (pandas nodes/edges).
-beacon_pkl = run_path / "topology_beacon_input.pkl"
-json_topology_to_beacon_pickle(topology_data, G, beacon_pkl)
-print(f"Wrote beacon input topology: {beacon_pkl}")
-
-# 2) Run SCION beacon simulation.
+# Run SCION beacon simulation.
 print("\nRunning SCION beacon simulation (CorrectedBeaconSimulator)...")
 beacon_out = run_path / "beacon_output"
 beacon_out.mkdir(parents=True, exist_ok=True)
 simulator = CorrectedBeaconSimulator()
-segment_store, _ = simulator.simulate(beacon_pkl, beacon_out)
+segment_store, _ = simulator.simulate(G, core_ases, beacon_out)
 
 
 def _enumerate_pairs():
@@ -193,9 +187,8 @@ with open(selection_file, "w") as f:
     json.dump(selection, f, indent=2)
 print(f"\nSelected pair saved to: {selection_file}")
 
-path_store_file = run_path / "path_store.pkl"
-with open(path_store_file, "wb") as f:
-    pickle.dump(path_store, f)
+path_store_file = run_path / "path_store.json"
+path_store.save(str(path_store_file))
 print(f"Path store saved to: {path_store_file}")
 
 stats = {

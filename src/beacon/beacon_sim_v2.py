@@ -92,7 +92,7 @@ class CorrectedBeaconSimulator:
             env_so = os.environ.get("BEACON_MAX_SEGMENTS_PER_ORIGIN")
             self.max_segments_per_origin = int(env_so) if env_so else 200
 
-    def simulate(self, topology_path: Path, output_dir: Path) -> Dict:
+    def simulate(self, G_in: nx.Graph, core_ases: set, output_dir: Path) -> Dict:
         """Run beacon simulation with proper interface tracking.
 
         Args:
@@ -108,15 +108,9 @@ class CorrectedBeaconSimulator:
         self._intra_seg_cap_warned = False
         self._intra_segment_cap_hit = False
 
-        # Load topology
-        with open(topology_path, "rb") as f:
-            topology = pickle.load(f)
-
-        self.node_df = topology["nodes"]
-        self.edge_df = topology["edges"]
-
+        self.core_ases = set(core_ases)
         # Build graph with interface info
-        self.G = self._build_graph()
+        self.G = self._build_graph(G_in)
 
         # Initialize segment store
         self.segments = {
@@ -173,31 +167,80 @@ class CorrectedBeaconSimulator:
 
         return segment_store, stats
 
-    def _build_graph(self) -> nx.MultiDiGraph:
-        """Build NetworkX graph with full edge information"""
+    def _build_graph(self, G_in: nx.Graph) -> nx.MultiDiGraph:
+        """Build directed MultiDiGraph with proper parent-child orientation."""
         G = nx.MultiDiGraph()
 
-        # Add nodes with attributes
-        for _, node in self.node_df.iterrows():
-            G.add_node(node["as_id"], **node.to_dict())
+        isd_of = {}
+        for nid, data in G_in.nodes(data=True):
+            G.add_node(nid, **data)
+            isd_of[nid] = int(data.get("isd", 0))
 
-        # Add edges with interface info
-        for _, edge in self.edge_df.iterrows():
-            G.add_edge(
-                edge["u"],
-                edge["v"],
-                u_if=edge["u_if"],
-                v_if=edge["v_if"],
-                type=edge["type"],
-                latency=edge.get("latency", 10),
-                capacity=edge.get("capacity", 1000),
-            )
+        # Distance to core per ISD
+        SENTINEL = 10**9
+        dist = {n: SENTINEL for n in G_in.nodes}
+        cores_by_isd = defaultdict(list)
+        for c in self.core_ases:
+            cores_by_isd[isd_of.get(c, -1)].append(c)
+
+        for isd, cores in cores_by_isd.items():
+            queue = deque()
+            for c in cores:
+                dist[c] = 0
+                queue.append(c)
+            while queue:
+                u = queue.popleft()
+                for v in G_in.neighbors(u):
+                    if isd_of.get(v, -1) != isd:
+                        continue
+                    if dist[v] != SENTINEL:
+                        continue
+                    dist[v] = dist[u] + 1
+                    queue.append(v)
+
+        # Add edges
+        if_cnt = 0
+        for u, v, data in G_in.edges(data=True):
+            raw_type = str(data.get("type", "")).lower()
+            u_core = u in self.core_ases
+            v_core = v in self.core_ases
+            same_isd = isd_of.get(u) == isd_of.get(v)
+
+            u_if = int(data.get("src_if", data.get("u_if", if_cnt)))
+            v_if = int(data.get("dst_if", data.get("v_if", if_cnt + 1)))
+            if_cnt += 2
+            lat = float(data.get("latency", data.get("delay", 10.0)))
+            bw = float(data.get("bandwidth", data.get("capacity", 1000.0)))
+
+            is_peer = "peer" in raw_type or (not same_isd and not (u_core and v_core))
+
+            if is_peer:
+                et_uv, et_vu = "peer", "peer"
+            elif u_core and v_core:
+                et_uv, et_vu = "core", "core"
+            else:
+                d_u = dist.get(u, SENTINEL)
+                d_v = dist.get(v, SENTINEL)
+                if d_u < d_v:
+                    parent, child = u, v
+                elif d_v < d_u:
+                    parent, child = v, u
+                else:
+                    parent, child = (u, v) if u < v else (v, u)
+
+                if parent == u:
+                    et_uv, et_vu = "parent_child", "child_parent"
+                else:
+                    et_uv, et_vu = "child_parent", "parent_child"
+
+            G.add_edge(u, v, u_if=u_if, v_if=v_if, type=et_uv, latency=lat, capacity=bw)
+            G.add_edge(v, u, u_if=v_if, v_if=u_if, type=et_vu, latency=lat, capacity=bw)
 
         return G
 
     def _simulate_core_beaconing(self) -> Dict:
         """Simulate core AS beaconing across CORE links (intra- and inter-ISD)."""
-        core_ases = list(self.node_df[self.node_df["role"] == "core"]["as_id"])
+        core_ases = list(self.core_ases)
         print(f"  Core ASes: {core_ases}")
 
         stats = {
@@ -259,7 +302,7 @@ class CorrectedBeaconSimulator:
                     continue
                 core_edge = None
                 for _, edge_info in edge_data.items():
-                    if edge_info.get("type") == "CORE":
+                    if edge_info.get("type") == "core":
                         core_edge = dict(edge_info)
                         break
                 if core_edge is None:
@@ -326,11 +369,13 @@ class CorrectedBeaconSimulator:
             }
         )
 
-        for isd in sorted(self.node_df["isd"].unique()):
+        for isd in sorted({data.get("isd", 0) for _, data in self.G.nodes(data=True)}):
             print(f"\n  ISD {isd}:")
-            isd_nodes = self.node_df[self.node_df["isd"] == isd]
-            isd_cores = list(isd_nodes[isd_nodes["role"] == "core"]["as_id"])
-            isd_non_cores = list(isd_nodes[isd_nodes["role"] == "non-core"]["as_id"])
+            isd_nodes = [
+                n for n, d in self.G.nodes(data=True) if d.get("isd", 0) == isd
+            ]
+            isd_cores = [n for n in isd_nodes if n in self.core_ases]
+            isd_non_cores = [n for n in isd_nodes if n not in self.core_ases]
 
             if not isd_cores:
                 print("    No core ASes - skipping")
@@ -430,7 +475,7 @@ class CorrectedBeaconSimulator:
                 # beacons. Skip ``child-parent`` (bottom-up) and ``peer``.
                 valid_edge = None
                 for _, edge_info in edge_data.items():
-                    if edge_info.get("type") == "PARENT_CHILD":
+                    if edge_info.get("type") == "parent_child":
                         valid_edge = edge_info
                         break
                 if not valid_edge:

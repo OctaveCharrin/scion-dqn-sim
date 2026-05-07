@@ -16,10 +16,10 @@ import networkx as nx
 import pandas as pd
 
 from src.beacon.beacon_sim_v2 import CorrectedBeaconSimulator
-from src.simulation.json_topology_adapter import json_topology_to_beacon_pickle
 
 
-def _build_pickle(tmp_path: Path) -> Path:
+
+def _build_graph():
     G = nx.Graph()
     for nid, isd, role, x, y in [
         (0, 0, "core", 0.0, 0.0),
@@ -29,28 +29,16 @@ def _build_pickle(tmp_path: Path) -> Path:
         (11, 1, "non-core", 100.0, 100.0),
     ]:
         G.add_node(nid, isd=isd, role=role, x=x, y=y)
-    G.add_edge(0, 1, type="PARENT_CHILD", latency=10.0, bandwidth=1000.0)
-    G.add_edge(1, 2, type="PARENT_CHILD", latency=8.0, bandwidth=1000.0)
-    G.add_edge(10, 11, type="PARENT_CHILD", latency=10.0, bandwidth=1000.0)
-    G.add_edge(0, 10, type="CORE", latency=20.0, bandwidth=10000.0)
-    G.add_edge(2, 11, type="PEER", latency=15.0, bandwidth=5000.0)
-
-    topo = {
-        "isds": [
-            {"isd_id": 0, "member_ases": [0, 1, 2]},
-            {"isd_id": 1, "member_ases": [10, 11]},
-        ],
-        "core_ases": [0, 10],
-    }
-    pkl = tmp_path / "topology.pkl"
-    json_topology_to_beacon_pickle(topo, G, pkl)
-    return pkl
-
-
+    G.add_edge(0, 1, type="parent_child", latency=10.0, bandwidth=1000.0)
+    G.add_edge(1, 2, type="parent_child", latency=8.0, bandwidth=1000.0)
+    G.add_edge(10, 11, type="parent_child", latency=10.0, bandwidth=1000.0)
+    G.add_edge(0, 10, type="core", latency=20.0, bandwidth=10000.0)
+    G.add_edge(2, 11, type="peer", latency=15.0, bandwidth=5000.0)
+    return G, {0, 10}
 def test_intra_beacons_are_top_down_only(tmp_path: Path):
-    pkl = _build_pickle(tmp_path)
+    G, core_ases = _build_graph()
     sim = CorrectedBeaconSimulator(max_segments_per_origin=200)
-    segments, _stats = sim.simulate(pkl, tmp_path)
+    segments, _stats = sim.simulate(G, core_ases, tmp_path)
 
     isd0_down = segments["down_segments_by_isd"].get(0, [])
     paths_isd0 = {tuple(s["path"]) for s in isd0_down}
@@ -64,9 +52,9 @@ def test_intra_beacons_are_top_down_only(tmp_path: Path):
 
 
 def test_peer_edges_not_used_for_beacons(tmp_path: Path):
-    pkl = _build_pickle(tmp_path)
+    G, core_ases = _build_graph()
     sim = CorrectedBeaconSimulator(max_segments_per_origin=200)
-    segments, _stats = sim.simulate(pkl, tmp_path)
+    segments, _stats = sim.simulate(G, core_ases, tmp_path)
 
     # PEER edge is between AS 2 (ISD 0) and AS 11 (ISD 1). No intra-ISD segment
     # should ever contain ASes from a different ISD.
@@ -85,9 +73,9 @@ def test_peer_edges_not_used_for_beacons(tmp_path: Path):
 
 
 def test_core_segments_are_directional_per_origin(tmp_path: Path):
-    pkl = _build_pickle(tmp_path)
+    G, core_ases = _build_graph()
     sim = CorrectedBeaconSimulator(max_segments_per_origin=200)
-    segments, _stats = sim.simulate(pkl, tmp_path)
+    segments, _stats = sim.simulate(G, core_ases, tmp_path)
 
     core_paths = {tuple(s["path"]) for s in segments["core_segments"]}
     # Both directions should be discovered (each core originates beacons).

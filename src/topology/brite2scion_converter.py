@@ -242,7 +242,7 @@ class BRITE2SCIONConverter:
                 dst,
                 src_if=interface_id,
                 dst_if=interface_id + 1,
-                type="PEER",
+                type="peer",
                 bandwidth=float(rng.uniform(5000, 10000)),
                 latency=lat,
             )

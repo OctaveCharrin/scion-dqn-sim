@@ -31,6 +31,7 @@ from src.baselines.shortest_path import ShortestPathSelector
 from src.baselines.widest_path import WidestPathSelector
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
 from src.simulation.evaluation_env import EvaluationPathSelectionEnv
+from src.simulation.path_store import InMemoryPathStore
 
 run_dir = resolve_run_dir()
 run_path = Path(run_dir)
@@ -50,8 +51,9 @@ with open(_topo_json, "r") as f:
 with open(run_path / "selected_pair.json", "r") as f:
     selected_pair = json.load(f)
 
-with open(run_path / "path_store.pkl", "rb") as f:
-    path_store = pickle.load(f)
+path_store = InMemoryPathStore.load(run_path / "path_store.json")
+# Removed open block
+    
 
 with open(run_path / "traffic_flows.pkl", "rb") as f:
     traffic_flows = pickle.load(f)

@@ -25,7 +25,7 @@ def test_render_minimal_topology_png(tmp_path: Path):
     G.add_edge(1, 2, type="parent-child")
     G.add_edge(2, 1, type="child-parent")
     G.add_edge(2, 3, type="parent-child")
-    G.add_edge(1, 3, type="PEER")
+    G.add_edge(1, 3, type="peer")
 
     payload = {
         "graph": nx.node_link_data(G),
