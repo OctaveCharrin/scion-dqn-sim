@@ -160,7 +160,7 @@ class BRITE2SCIONConverter:
             )
 
         peer_rng = np.random.default_rng(peer_seed)
-        n_peer = self.add_random_peering_links(
+        n_peer = self._add_random_peering_links(
             G, rng=peer_rng, max_links=extra_peering_max_links
         )
         print(f"\nAdded {n_peer} random PEER link(s) for dense connectivity")
@@ -191,7 +191,7 @@ class BRITE2SCIONConverter:
             "core_ases": set(core_ases),
         }
 
-    def add_random_peering_links(
+    def _add_random_peering_links(
         self,
         G: nx.Graph,
         *,
@@ -378,9 +378,7 @@ class BRITE2SCIONConverter:
             return {node: 0 for node in nodes}
         xs = np.array([float(node_attrs[n]["x"]) for n in nodes])
         ys = np.array([float(node_attrs[n]["y"]) for n in nodes])
-        by_index = assign_isds_kmeans_coordinates(
-            xs, ys, self.n_isds, random_state=42
-        )
+        by_index = assign_isds_kmeans_coordinates(xs, ys, self.n_isds, random_state=42)
         return {nodes[i]: by_index[i] for i in range(len(nodes))}
 
     def _select_core_ases(self, G: nx.Graph, isd_assignment: Dict) -> set:
@@ -447,7 +445,7 @@ class BRITE2SCIONConverter:
                         G.add_edge(
                             u,
                             v,
-                            bandwidth=100000.0,
+                            bandwidth=100000.0,  # TODO: consider making this tunable
                             latency=lat,
                             virtual=True,
                         )
@@ -488,7 +486,7 @@ class BRITE2SCIONConverter:
                         G.add_edge(
                             u,
                             v,
-                            bandwidth=50000.0,
+                            bandwidth=50000.0, #TODO: consider making this tunable
                             latency=lat,
                             virtual=True,
                         )
@@ -572,7 +570,7 @@ class BRITE2SCIONConverter:
                             G.add_edge(
                                 node,
                                 parent,
-                                bandwidth=1000.0,
+                                bandwidth=1000.0, #TODO: consider making this tunable
                                 latency=lat,
                                 virtual=True,
                             )
@@ -731,7 +729,7 @@ class BRITE2SCIONConverter:
                                 G.add_edge(
                                     as1,
                                     as2,
-                                    bandwidth=1000.0,
+                                    bandwidth=1000.0, #TODO: consider making this tunable
                                     latency=lat,
                                     virtual=True,
                                     cross_connect=True,
@@ -778,7 +776,7 @@ class BRITE2SCIONConverter:
                                     G.add_edge(
                                         as1,
                                         as2,
-                                        bandwidth=1000.0,
+                                        bandwidth=1000.0, #TODO: consider making this tunable
                                         latency=lat,
                                         virtual=True,
                                         shortcut=True,

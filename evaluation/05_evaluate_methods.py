@@ -12,7 +12,6 @@ Mirrors the training pipeline:
 from __future__ import annotations
 
 import json
-import os
 import pickle
 import time
 from collections import defaultdict
@@ -21,18 +20,17 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
+from _common import resolve_run_dir, topology_dir
 from tqdm import tqdm
 
-from _common import resolve_run_dir, topology_dir
-
-from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
-from src.simulation.evaluation_env import EvaluationPathSelectionEnv
-from src.baselines.shortest_path import ShortestPathSelector
-from src.baselines.widest_path import WidestPathSelector
-from src.baselines.lowest_latency import LowestLatencySelector
 from src.baselines.ecmp import ECMPSelector
+from src.baselines.lowest_latency import LowestLatencySelector
 from src.baselines.random_selection import RandomSelector
 from src.baselines.scion_default import SCIONDefaultSelector
+from src.baselines.shortest_path import ShortestPathSelector
+from src.baselines.widest_path import WidestPathSelector
+from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
+from src.simulation.evaluation_env import EvaluationPathSelectionEnv
 
 run_dir = resolve_run_dir()
 run_path = Path(run_dir)
@@ -72,8 +70,7 @@ src_as = int(selected_pair["source_as"])
 dst_as = int(selected_pair["destination_as"])
 
 pair_pool: List[Tuple[int, int]] = [
-    (int(p[0]), int(p[1]))
-    for p in selected_pair.get("pair_pool", [[src_as, dst_as]])
+    (int(p[0]), int(p[1])) for p in selected_pair.get("pair_pool", [[src_as, dst_as]])
 ]
 if not pair_pool:
     pair_pool = [(src_as, dst_as)]
@@ -112,7 +109,6 @@ env = EvaluationPathSelectionEnv(
 _config: EnhancedDQNConfig = model_checkpoint["config"]
 _state_dim = int(model_checkpoint.get("state_dim", 5))
 _action_dim = int(model_checkpoint.get("action_dim", selected_pair.get("num_paths", 1)))
-GOODPUT_CAP_MBPS = float(model_checkpoint.get("goodput_cap_mbps", 100.0))
 
 dqn_agent = EnhancedDQNAgent(_state_dim, _action_dim, _config)
 _q = model_checkpoint.get("q_network") or model_checkpoint.get("model_state_dict")
@@ -144,9 +140,7 @@ def _aggregate_state(env: EvaluationPathSelectionEnv, hour_idx: int) -> np.ndarr
         return np.array([f0, f1, 0.0, 0.0, 0.0], dtype=np.float32)
     utils = [float(s.get("utilization", 0.0)) for s in states]
     losses = [float(s.get("loss_rate", 0.0)) for s in states]
-    lats = [
-        min(100.0, float(s.get("latency_ms", 50.0))) / 100.0 for s in states
-    ]
+    lats = [min(100.0, float(s.get("latency_ms", 50.0))) / 100.0 for s in states]
     trusts = [
         max(0.0, min(1.0, 1.0 - (w3 * loss + w4 * lat)))
         for loss, lat in zip(losses, lats)
@@ -157,12 +151,26 @@ def _aggregate_state(env: EvaluationPathSelectionEnv, hour_idx: int) -> np.ndarr
     return np.array([f0, f1, f2, f3, f4], dtype=np.float32)
 
 
-def _compute_reward(path_metrics: Dict) -> float:
+def _compute_reward(path_metrics: Dict, env: EvaluationPathSelectionEnv) -> float:
     bw = float(path_metrics.get("bandwidth_mbps") or 0.0)
-    goodput = max(0.0, min(bw / GOODPUT_CAP_MBPS, 1.0))
+    
+    # --- NEW: Dynamic Local Normalization ---
+    # Find the maximum bandwidth actually available for this pair at this hour
+    states = list(env.current_link_states.values())
+    if states:
+        max_possible_bw = max([float(s.get("available_bandwidth_mbps", 1.0)) for s in states])
+        max_possible_bw = max(max_possible_bw, 1.0) # Prevent division by zero
+    else:
+        max_possible_bw = 100.0 # Fallback 
+        
+    # Now, if the agent picks the widest path, goodput is exactly 1.0
+    goodput = max(0.0, min(bw / max_possible_bw, 1.0))
+    
+    # --- REST OF THE FUNCTION REMAINS UNCHANGED ---
     loss = float(path_metrics.get("loss_rate", 0.0))
     delay = min(100.0, float(path_metrics.get("latency_ms", 50.0))) / 100.0
     trust = max(0.0, min(1.0, 1.0 - (w3 * loss + w4 * delay)))
+    
     return float(2.0 * (w1 * goodput + w2 * trust) - 1.0)
 
 
@@ -246,23 +254,28 @@ for method_name, method in [("dqn", dqn_agent)] + list(baseline_methods.items())
                 if method_name == "random":
                     action = int(np.random.choice(len(paths)))
                 else:
-                    action = int(method.select_path(paths, path_metrics_list, flow_stub, state_stub))
+                    action = int(
+                        method.select_path(
+                            paths, path_metrics_list, flow_stub, state_stub
+                        )
+                    )
                 if 0 <= action < len(paths):
                     path_metrics = path_metrics_list[action]
 
             selection_time_ms = (time.time() - start_time) * 1000.0
             method_results["selection_times_ms"].append(selection_time_ms)
 
-            if not path_metrics:
-                pbar.update(1)
-                continue
+            # Do not use the probe's path_metrics for the final reward! 
+            # Step the environment to get the actual properties of the chosen path.
+            _, _, _, info = env.step(action)
+            actual_metrics = info["path_metrics"]
 
-            latency = float(path_metrics.get("latency_ms", 50.0))
-            bw_val = path_metrics.get("bandwidth_mbps")
+            latency = float(actual_metrics.get("latency_ms", 50.0))
+            bw_val = actual_metrics.get("bandwidth_mbps")
             bandwidth = float(bw_val) if bw_val is not None else 0.0
-            loss_rate = float(path_metrics.get("loss_rate", 0.0))
+            loss_rate = float(actual_metrics.get("loss_rate", 0.0))
 
-            method_results["rewards"].append(_compute_reward(path_metrics))
+            method_results["rewards"].append(_compute_reward(path_metrics, env))
             method_results["latencies"].append(latency)
             method_results["bandwidths"].append(bandwidth)
             method_results["losses"].append(loss_rate)
@@ -327,10 +340,7 @@ probe_reduction = 0.0
 time_reduction = 0.0
 if "dqn" in summary:
     baseline_avg_probes = float(
-        np.mean(
-            [s["total_probes"] for k, s in summary.items() if k != "dqn"]
-            or [0.0]
-        )
+        np.mean([s["total_probes"] for k, s in summary.items() if k != "dqn"] or [0.0])
     )
     if baseline_avg_probes:
         probe_reduction = (

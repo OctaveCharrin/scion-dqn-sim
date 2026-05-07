@@ -6,7 +6,7 @@ Emits BRITE 2.x Java configuration files (numeric model codes and BeginOutput fl
 
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import yaml
 

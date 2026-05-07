@@ -9,15 +9,16 @@ same reward shape so the two variants stay comparable.
 from __future__ import annotations
 
 import json
+import os as _os
 import pickle
+import random
 from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
 import torch
-from tqdm import tqdm
-
 from _common import resolve_run_dir, topology_dir
+from tqdm import tqdm
 
 from src.rl.dqn_agent_simple import SimpleDQNAgent
 from src.simulation.evaluation_env import EvaluationPathSelectionEnv
@@ -123,9 +124,7 @@ def _aggregate_state(env: EvaluationPathSelectionEnv, hour_idx: int) -> np.ndarr
         return np.array([f0, f1, 0.0, 0.0, 0.0], dtype=np.float32)
     utils = [float(s.get("utilization", 0.0)) for s in states]
     losses = [float(s.get("loss_rate", 0.0)) for s in states]
-    lats = [
-        min(100.0, float(s.get("latency_ms", 50.0))) / 100.0 for s in states
-    ]
+    lats = [min(100.0, float(s.get("latency_ms", 50.0))) / 100.0 for s in states]
     trusts = [
         max(0.0, min(1.0, 1.0 - (W3 * loss + W4 * lat)))
         for loss, lat in zip(losses, lats)
@@ -136,12 +135,26 @@ def _aggregate_state(env: EvaluationPathSelectionEnv, hour_idx: int) -> np.ndarr
     return np.array([f0, f1, f2, f3, f4], dtype=np.float32)
 
 
-def _reward_from_metrics(path_metrics: Dict, cap_mbps: float) -> float:
-    bw = float(path_metrics.get("bandwidth_mbps", 0.0))
-    goodput = max(0.0, min(bw / cap_mbps, 1.0))
+def _reward_from_metrics(path_metrics: Dict, env: EvaluationPathSelectionEnv) -> float:
+    bw = float(path_metrics.get("bandwidth_mbps") or 0.0)
+    
+    # --- NEW: Dynamic Local Normalization ---
+    # Find the maximum bandwidth actually available for this pair at this hour
+    states = list(env.current_link_states.values())
+    if states:
+        max_possible_bw = max([float(s.get("available_bandwidth_mbps", 1.0)) for s in states])
+        max_possible_bw = max(max_possible_bw, 1.0) # Prevent division by zero
+    else:
+        max_possible_bw = 100.0 # Fallback 
+        
+    # Now, if the agent picks the widest path, goodput is exactly 1.0
+    goodput = max(0.0, min(bw / max_possible_bw, 1.0))
+    
+    # --- REST OF THE FUNCTION REMAINS UNCHANGED ---
     loss = float(path_metrics.get("loss_rate", 0.0))
     delay = min(100.0, float(path_metrics.get("latency_ms", 50.0))) / 100.0
     trust = max(0.0, min(1.0, 1.0 - (W3 * loss + W4 * delay)))
+    
     return float(2.0 * (W1 * goodput + W2 * trust) - 1.0)
 
 
@@ -152,7 +165,7 @@ def _reward_from_metrics(path_metrics: Dict, cap_mbps: float) -> float:
 TRAINING_HOURS = list(range(14 * 24))
 NUM_EPISODES = max(200, len(traffic_flows) // EPISODE_LENGTH)
 
-import os as _os
+
 
 _env_eps = _os.environ.get("DQN_TRAIN_EPISODES", "").strip()
 if _env_eps.isdigit():
@@ -162,8 +175,6 @@ print(
     f"\nTraining: {NUM_EPISODES} episodes x {EPISODE_LENGTH} hours each "
     f"(~{NUM_EPISODES * EPISODE_LENGTH} steps)..."
 )
-
-import random
 
 start_rng = random.Random(123)
 episode_rewards: List[float] = []
@@ -181,7 +192,7 @@ for ep in tqdm(range(NUM_EPISODES), desc="Episodes"):
             action = 0
         _, _, done, info = env.step(action)
         next_state = _aggregate_state(env, env.hour_idx)
-        reward = _reward_from_metrics(info["path_metrics"], GOODPUT_CAP_MBPS)
+        reward = _reward_from_metrics(info["path_metrics"], env)
         ep_reward += reward
         agent.remember(state, action, reward, next_state, done)
         loss = agent.replay()
@@ -226,9 +237,7 @@ training_stats = {
     "losses": losses,
     "final_epsilon": agent.epsilon,
     "avg_reward": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
-    "avg_probes_per_episode": float(np.mean(episode_probes))
-    if episode_probes
-    else 0.0,
+    "avg_probes_per_episode": float(np.mean(episode_probes)) if episode_probes else 0.0,
     "reward_weights": {"w1": W1, "w2": W2, "w3": W3, "w4": W4},
     "goodput_cap_mbps": GOODPUT_CAP_MBPS,
 }

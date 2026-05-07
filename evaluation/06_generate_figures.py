@@ -3,97 +3,84 @@
 Generate LNCS-style figures for the evaluation results
 """
 
-import os
 import json
-import numpy as np
+import os
+
 import matplotlib.pyplot as plt
+import numpy as np
 
 from _common import (
     COLUMN_WIDTH,
     FULL_WIDTH,
-    METHOD_COLORS as method_colors,
-    METHOD_DISPLAY_NAMES as method_display_names,
     apply_lncs_style,
     resolve_run_dir,
+    METHOD_COLORS as method_colors,
+    METHOD_DISPLAY_NAMES as method_display_names,
 )
+
+LABEL_ROTATION = 45  
+LABEL_HA = "right"   
 
 run_dir = resolve_run_dir()
 
-with open(os.path.join(run_dir, "evaluation_results.json"), 'r') as f:
+with open(os.path.join(run_dir, "evaluation_results.json"), "r") as f:
     results = json.load(f)
 
-summary = results['summary']
+summary = results["summary"]
 
 apply_lncs_style()
 
-# Figure 1: Probe Overhead and Selection Time (Bar Graph)
-# Use constrained_layout so rotated tick labels and annotations share space
-# predictably (tight_layout often fails with long rotated x labels).
-fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(FULL_WIDTH, 3.2), layout="constrained")
+# ---------------------------------------------------------------------------
+# Figure 1: Probe Overhead and Selection Time (1x2 Subplots)
+# ---------------------------------------------------------------------------
+fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(FULL_WIDTH, 4.0), constrained_layout=True)
 
 # Sort methods by probe overhead
 methods = list(summary.keys())
-methods.sort(key=lambda m: summary[m]['total_probe_time_ms'])
+methods.sort(key=lambda m: summary[m]["avg_probe_time_per_selection"])
 
-# Subplot 1: Probe overhead
-probe_times = [summary[m]['avg_probe_time_per_selection'] for m in methods]
-colors1 = [method_colors[m] for m in methods]
-display_names1 = [method_display_names[m] for m in methods]
+probe_times = [summary[m]["avg_probe_time_per_selection"] for m in methods]
+sel_times = [summary[m]["avg_selection_time_ms"] for m in methods]
+colors1 = [method_colors.get(m, "blue") for m in methods]
+display_names1 = [method_display_names.get(m, m) for m in methods]
 
-bars1 = ax1.bar(range(len(methods)), probe_times, color=colors1)
-ax1.set_xticks(range(len(methods)))
-ax1.set_xticklabels(display_names1, rotation=45, ha='right')
-ax1.set_ylabel('Probe Overhead (ms)')
-ax1.set_title('(a) Average Probe Overhead per Selection')
-ax1.grid(axis='y', alpha=0.3)
+x_pos = np.arange(len(methods))
 
-# Add value labels on bars (offset in points, not data coords — probe ms is large)
-for bar, val in zip(bars1, probe_times):
-    ax1.annotate(
-        f"{val:.0f}",
-        xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-        xytext=(0, 3),
-        textcoords="offset points",
-        ha="center",
-        va="bottom",
-        fontsize=8,
-    )
+# Subplot 1: Probe overhead 
+bars1 = ax1.bar(x_pos, probe_times, color=colors1, edgecolor="black", linewidth=0.5)
+ax1.set_ylabel("Avg Probe Overhead (ms)")
+ax1.set_title("Probe Overhead per Selection")
+ax1.set_xticks(x_pos)
+ax1.set_xticklabels(display_names1, rotation=LABEL_ROTATION, ha=LABEL_HA)
+# Add numbers on top of bars, pad Y-axis by 20% so text fits
+ax1.bar_label(bars1, fmt='%.1f', padding=3, fontsize=8)
+ax1.set_ylim(0, max(probe_times) * 1.2)
 
-# Subplot 2: Selection time
-selection_times = [summary[m]['avg_selection_time_ms'] for m in methods]
-bars2 = ax2.bar(range(len(methods)), selection_times, color=colors1)
-ax2.set_xticks(range(len(methods)))
-ax2.set_xticklabels(display_names1, rotation=45, ha='right')
-ax2.set_ylabel('Selection Time (ms)')
-ax2.set_title('(b) Average Path Selection Time')
-ax2.grid(axis='y', alpha=0.3)
-
-# Selection times are ~1e-2 ms; never add a large data offset (e.g. +0.5) or
-# bbox_inches='tight' expands the figure to include labels far above the axes.
-for bar, val in zip(bars2, selection_times):
-    ax2.annotate(
-        f"{val:.1f}",
-        xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
-        xytext=(0, 3),
-        textcoords="offset points",
-        ha="center",
-        va="bottom",
-        fontsize=8,
-    )
+# Subplot 2: Selection Time
+bars2 = ax2.bar(x_pos, sel_times, color=colors1, edgecolor="black", linewidth=0.5)
+ax2.set_ylabel("Avg Selection Time (ms)")
+ax2.set_title("Algorithm Selection Time")
+ax2.set_xticks(x_pos)
+ax2.set_xticklabels(display_names1, rotation=LABEL_ROTATION, ha=LABEL_HA)
+# Add numbers on top of bars, pad Y-axis by 20% so text fits
+ax2.bar_label(bars2, fmt='%.3f', padding=3, fontsize=8)
+ax2.set_ylim(0, max(sel_times) * 1.2)
 
 fig1.savefig(os.path.join(run_dir, "figure1_probe_overhead.png"), dpi=300, bbox_inches="tight")
+plt.close(fig1)
 
-# Figure 2: Path Reward (Box Plot)
-fig2, ax = plt.subplots(1, 1, figsize=(COLUMN_WIDTH, 3))
-
+# ---------------------------------------------------------------------------
+# Figure 2: Path Selection Reward (Corrected Distribution View)
+# ---------------------------------------------------------------------------
+fig2, ax = plt.subplots(figsize=(COLUMN_WIDTH, 4.0), constrained_layout=True)
 # Prepare data for box plot
+
 reward_data = []
 labels = []
 positions = []
 
 # Order methods by mean reward
-methods_by_reward = list(summary.keys())
-methods_by_reward.sort(key=lambda m: summary[m]['reward_mean'], reverse=True)
+methods_by_reward = sorted(summary.keys(), key=lambda m: summary[m]["reward_mean"], reverse=True)
 
 for i, method in enumerate(methods_by_reward):
     # Generate synthetic data based on mean and std
@@ -123,12 +110,12 @@ ax.set_xticklabels(labels, rotation=45, ha='right')
 ax.set_ylabel('Path Reward')
 ax.set_title('Path Selection Performance')
 ax.grid(axis='y', alpha=0.3)
-ax.set_ylim(-0.5, 1.0)
+ax.set_ylim(-1.0, 1.2)
 
 # Add mean values as text
 for i, method in enumerate(methods_by_reward):
     mean_val = summary[method]['reward_mean']
-    ax.text(i, 0.95, f'{mean_val:.3f}', ha='center', va='top', fontsize=8)
+    ax.text(i, 0.95, f'{mean_val:.3f}', ha='center', va='top', fontsize=6)
 
 plt.tight_layout()
 fig2.savefig(os.path.join(run_dir, 'figure2_path_reward.png'), dpi=300, bbox_inches='tight')
@@ -167,39 +154,47 @@ for method in methods_by_reward:
         f"{method_display_names[method]:<20} {reward:<15} {latency:<15} {probes:<20.1f} {reduction:<10}"
     )
 
-# Create detailed probe breakdown figure
-fig3, ax = plt.subplots(1, 1, figsize=(COLUMN_WIDTH, 3))
+# ---------------------------------------------------------------------------
+# Figure 3: Probe Type Breakdown
+# ---------------------------------------------------------------------------
+fig3, ax = plt.subplots(figsize=(COLUMN_WIDTH, 4.0), constrained_layout=True)
 
-methods_ordered = ['dqn'] + [m for m in methods_by_reward if m != 'dqn']
+methods_ordered = ["dqn"] + sorted(
+    [m for m in summary.keys() if m != "dqn"], 
+    key=lambda m: summary[m].get("total_probes", 0)
+)
+
 latency_probes = [
-    summary[m]['latency_probes'] / max(1, int(summary[m].get('n_selections', 336)))
+    summary[m]["latency_probes"] / max(1, int(summary[m].get("n_selections", 1)))
     for m in methods_ordered
 ]
 bandwidth_probes = [
-    summary[m]['bandwidth_probes'] / max(1, int(summary[m].get('n_selections', 336)))
+    summary[m]["bandwidth_probes"] / max(1, int(summary[m].get("n_selections", 1)))
     for m in methods_ordered
 ]
 
 x = np.arange(len(methods_ordered))
 width = 0.35
 
-bars1 = ax.bar(x - width/2, latency_probes, width, label='Latency Probes', color='lightblue')
-bars2 = ax.bar(x + width/2, bandwidth_probes, width, label='Bandwidth Probes', color='lightcoral')
+bars_lat = ax.bar(x - width / 2, latency_probes, width, label="Latency Probes", color="#87CEEB", edgecolor="black", linewidth=0.5)
+bars_bw = ax.bar(x + width / 2, bandwidth_probes, width, label="Bandwidth Probes", color="#F08080", edgecolor="black", linewidth=0.5)
 
-ax.set_xlabel('Path Selection Method')
-ax.set_ylabel('Probes per Selection')
-ax.set_title('Probe Type Breakdown')
+ax.set_ylabel("Probes per Selection")
+ax.set_title("Probe Type Breakdown")
 ax.set_xticks(x)
-ax.set_xticklabels([method_display_names[m] for m in methods_ordered], rotation=45, ha='right')
-ax.legend()
-ax.grid(axis='y', alpha=0.3)
+ax.set_xticklabels([method_display_names.get(m, m) for m in methods_ordered], rotation=LABEL_ROTATION, ha=LABEL_HA)
 
-plt.tight_layout()
-fig3.savefig(os.path.join(run_dir, 'figure3_probe_breakdown.png'), dpi=300, bbox_inches='tight')
+# Add numeric labels to both Latency and Bandwidth bars
+ax.bar_label(bars_lat, fmt='%.1f', padding=3, fontsize=7)
+ax.bar_label(bars_bw, fmt='%.1f', padding=3, fontsize=7)
 
-print(f"\nFigures saved to {run_dir}/")
-print("  - figure1_probe_overhead.png: Probe overhead and selection time")
-print("  - figure2_path_reward.png: Path reward distribution")
-print("  - figure3_probe_breakdown.png: Probe type breakdown")
+max_probe_height = max(max(latency_probes), max(bandwidth_probes))
+# Extend upper boundary by 40% to comfortably house the legend and the bar text
+ax.set_ylim(0, max_probe_height * 1.4) 
 
-plt.close('all')
+ax.legend(loc="upper left", ncol=1, frameon=True, facecolor="white", framealpha=0.9, edgecolor="gray")
+
+fig3.savefig(os.path.join(run_dir, "figure3_probe_breakdown.png"), dpi=300, bbox_inches="tight")
+plt.close(fig3)
+
+print("Figures successfully generated with correct linear data scaling and numeric labels.")
