@@ -21,7 +21,6 @@ BFS-pop budget (``max_intra_queue_pops``).
 
 import json
 import os
-import pickle
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -135,13 +134,6 @@ class CorrectedBeaconSimulator:
         # Convert to legacy format for compatibility
         segment_store = self._convert_to_legacy_format()
 
-        with open(output_dir / "segments_corrected.pkl", "wb") as f:
-            pickle.dump(segment_store, f)
-
-        # Save detailed segments with metadata
-        with open(output_dir / "segments_detailed.pkl", "wb") as f:
-            pickle.dump(self.segments, f)
-
         with open(output_dir / "segments_corrected.json", "w") as f:
             json.dump(segment_store, f)
 
@@ -162,8 +154,8 @@ class CorrectedBeaconSimulator:
             },
         }
 
-        with open(output_dir / "beacon_stats_corrected.pkl", "wb") as f:
-            pickle.dump(stats, f)
+        with open(output_dir / "beacon_stats_corrected.json", "w") as f:
+            json.dump(stats, f)
 
         return segment_store, stats
 

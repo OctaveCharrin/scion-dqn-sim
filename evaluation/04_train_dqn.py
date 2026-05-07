@@ -9,7 +9,7 @@ Notable behavior changes vs. the original:
   ``num_paths`` over all pairs and an action mask hides invalid actions per
   pair, so the policy generalizes across SCION-shaped destinations.
 * **Stateful episodes.** ``EvaluationPathSelectionEnv`` now advances ``hour_idx``
-  step-by-step and ``done`` fires after ``episode_length`` steps, so γ in the
+  step-by-step and ``done`` fires after ``episode_length`` steps, so in the
   Bellman bootstrap actually contributes signal.
 * **Real link-derived state.** The agent observes per-pair, per-hour aggregate
   utilization and link-trust statistics computed from the current pair's path
@@ -74,7 +74,8 @@ pair_pool: List[Tuple[int, int]] = [
     (int(p[0]), int(p[1]))
     for p in selected_pair.get("pair_pool", [[src_as, dst_as]])
 ]
-if not pair_pool:
+#TODO: CHANGE THIS
+if pair_pool:
     pair_pool = [(src_as, dst_as)]
 
 

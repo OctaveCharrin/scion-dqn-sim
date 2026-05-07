@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import networkx as nx
 import numpy as np
-import pytest
 
 from src.topology.topology_geo import (
     add_inter_isd_core_ring_edges,
     assign_isds_kmeans_coordinates,
-    select_cores_by_centroid_proximity,
 )
 
 
@@ -42,4 +40,3 @@ def test_inter_isd_ring_connects_cores() -> None:
     assert nx.is_connected(G)
 
 
-@pytest.mark.parametrize("seed", range(15))

@@ -22,6 +22,7 @@ PIPELINE_STEPS = [
     "02_run_beaconing.py",
     "03_simulate_traffic.py",
     "04_train_dqn.py",
+    "04_train_simple_dqn.py",
     "05_evaluate_methods.py",
     "06_generate_figures.py",
 ]

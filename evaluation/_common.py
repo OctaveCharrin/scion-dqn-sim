@@ -124,7 +124,8 @@ COLUMN_WIDTH: float = 3.5
 FULL_WIDTH: float = 7.0
 
 METHOD_DISPLAY_NAMES: Mapping[str, str] = {
-    "dqn": "DQN (Ours)",
+    "dqn": "DQN (Enhanced)",
+    "simple_dqn": "DQN (Simple)",
     "shortest_path": "Shortest Path",
     "widest_path": "Widest Path",
     "lowest_latency": "Lowest Latency",
@@ -135,6 +136,7 @@ METHOD_DISPLAY_NAMES: Mapping[str, str] = {
 
 METHOD_COLORS: Mapping[str, str] = {
     "dqn": "#1f77b4",
+    "simple_dqn": "#17becf",
     "shortest_path": "#ff7f0e",
     "widest_path": "#2ca02c",
     "lowest_latency": "#d62728",

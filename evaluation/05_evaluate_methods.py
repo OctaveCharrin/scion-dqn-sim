@@ -30,6 +30,7 @@ from src.baselines.scion_default import SCIONDefaultSelector
 from src.baselines.shortest_path import ShortestPathSelector
 from src.baselines.widest_path import WidestPathSelector
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
+from src.rl.dqn_agent_simple import SimpleDQNAgent
 from src.simulation.evaluation_env import EvaluationPathSelectionEnv
 from src.simulation.path_store import InMemoryPathStore
 
@@ -68,13 +69,21 @@ try:
 except TypeError:
     model_checkpoint = torch.load(_model_path, map_location="cpu")
 
+# Trained Simple DQN checkpoint (from 04_train_simple_dqn.py).
+_simple_model_path = run_path / "dqn_simple_model.pth"
+try:
+    simple_model_checkpoint = torch.load(_simple_model_path, map_location="cpu", weights_only=False)
+except TypeError:
+    simple_model_checkpoint = torch.load(_simple_model_path, map_location="cpu")
+
 src_as = int(selected_pair["source_as"])
 dst_as = int(selected_pair["destination_as"])
 
 pair_pool: List[Tuple[int, int]] = [
     (int(p[0]), int(p[1])) for p in selected_pair.get("pair_pool", [[src_as, dst_as]])
 ]
-if not pair_pool:
+#TODO: CHANGE THIS
+if pair_pool:
     pair_pool = [(src_as, dst_as)]
 
 EVAL_PAIRS = pair_pool[: min(len(pair_pool), 32)]  # cap to keep eval bounded
@@ -119,6 +128,20 @@ if "target_network" in model_checkpoint:
     dqn_agent.target_network.load_state_dict(model_checkpoint["target_network"])
 dqn_agent.epsilon = 0.0  # No exploration during evaluation
 
+_state_dim_simple = int(simple_model_checkpoint.get("state_dim", 5))
+_action_dim_simple = int(simple_model_checkpoint.get("action_dim", selected_pair.get("num_paths", 1)))
+
+simple_dqn_agent = SimpleDQNAgent(
+    state_dim=_state_dim_simple,
+    action_dim=_action_dim_simple,
+    learning_rate=1e-3,
+)
+_q_simple = simple_model_checkpoint.get("q_network")
+simple_dqn_agent.q_network.load_state_dict(_q_simple)
+if "target_network" in simple_model_checkpoint:
+    simple_dqn_agent.target_network.load_state_dict(simple_model_checkpoint["target_network"])
+simple_dqn_agent.epsilon = 0.0  # No exploration during evaluation
+
 
 # -----------------------------------------------------------------------------
 # Reward & state featurization (must match 04_train_dqn.py)
@@ -153,8 +176,8 @@ def _aggregate_state(env: EvaluationPathSelectionEnv, hour_idx: int) -> np.ndarr
     return np.array([f0, f1, f2, f3, f4], dtype=np.float32)
 
 
-def _compute_reward(path_metrics: Dict, env: EvaluationPathSelectionEnv) -> float:
-    bw = float(path_metrics.get("bandwidth_mbps") or 0.0)
+def _compute_reward(actual_metrics: Dict, env: EvaluationPathSelectionEnv) -> float:
+    bw = float(actual_metrics.get("bandwidth_mbps") or 0.0)
     
     # --- NEW: Dynamic Local Normalization ---
     # Find the maximum bandwidth actually available for this pair at this hour
@@ -169,8 +192,8 @@ def _compute_reward(path_metrics: Dict, env: EvaluationPathSelectionEnv) -> floa
     goodput = max(0.0, min(bw / max_possible_bw, 1.0))
     
     # --- REST OF THE FUNCTION REMAINS UNCHANGED ---
-    loss = float(path_metrics.get("loss_rate", 0.0))
-    delay = min(100.0, float(path_metrics.get("latency_ms", 50.0))) / 100.0
+    loss = float(actual_metrics.get("loss_rate", 0.0))
+    delay = min(100.0, float(actual_metrics.get("latency_ms", 50.0))) / 100.0
     trust = max(0.0, min(1.0, 1.0 - (w3 * loss + w4 * delay)))
     
     return float(2.0 * (w1 * goodput + w2 * trust) - 1.0)
@@ -205,7 +228,7 @@ results: Dict[str, Dict] = defaultdict(
 
 print("\nEvaluating methods...")
 
-for method_name, method in [("dqn", dqn_agent)] + list(baseline_methods.items()):
+for method_name, method in [("dqn", dqn_agent), ("simple_dqn", simple_dqn_agent)] + list(baseline_methods.items()):
     print(f"\n--- {method_name} ---")
     method_results = results[method_name]
 
@@ -225,13 +248,19 @@ for method_name, method in [("dqn", dqn_agent)] + list(baseline_methods.items())
             start_time = time.time()
             path_metrics: Dict = {}
 
-            if method_name == "dqn":
+            if method_name in ("dqn", "simple_dqn"):
                 state = _aggregate_state(env, hour_idx)
-                mask = env.action_mask(_action_dim)
-                action = int(dqn_agent.act(state, action_mask=mask))
-                if action >= len(paths):
-                    valid = np.where(mask)[0]
-                    action = int(valid[0]) if len(valid) > 0 else 0
+                if method_name == "dqn":
+                    mask = env.action_mask(_action_dim)
+                    action = int(dqn_agent.act(state, action_mask=mask))
+                    if action >= len(paths):
+                        valid = np.where(mask)[0]
+                        action = int(valid[0]) if len(valid) > 0 else 0
+                else:
+                    action = int(simple_dqn_agent.act(state))
+                    if action >= len(paths):
+                        action = 0
+
                 # Selective probing: probe only the chosen path.
                 path_metrics = env.probe_path_full(action)
                 method_results["bandwidth_probes"] += 1
@@ -277,7 +306,7 @@ for method_name, method in [("dqn", dqn_agent)] + list(baseline_methods.items())
             bandwidth = float(bw_val) if bw_val is not None else 0.0
             loss_rate = float(actual_metrics.get("loss_rate", 0.0))
 
-            method_results["rewards"].append(_compute_reward(path_metrics, env))
+            method_results["rewards"].append(_compute_reward(actual_metrics, env))
             method_results["latencies"].append(latency)
             method_results["bandwidths"].append(bandwidth)
             method_results["losses"].append(loss_rate)

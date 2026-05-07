@@ -128,7 +128,7 @@ class BRITE2SCIONConverter:
                 v_y = float(G.nodes[v].get("y", 0.0))
                 lat = euclidean_latency(u_x, u_y, v_x, v_y)
             bw = float(edge.get("bandwidth", 10.0))
-            edge["type"] = lt.upper().replace("-", "_")
+            edge["type"] = lt
             edge["latency"] = lat
             edge["bandwidth"] = bw
 

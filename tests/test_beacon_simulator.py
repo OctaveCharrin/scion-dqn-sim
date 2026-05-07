@@ -13,10 +13,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import networkx as nx
-import pandas as pd
 
 from src.beacon.beacon_sim_v2 import CorrectedBeaconSimulator
-
 
 
 def _build_graph():
@@ -35,6 +33,8 @@ def _build_graph():
     G.add_edge(0, 10, type="core", latency=20.0, bandwidth=10000.0)
     G.add_edge(2, 11, type="peer", latency=15.0, bandwidth=5000.0)
     return G, {0, 10}
+
+
 def test_intra_beacons_are_top_down_only(tmp_path: Path):
     G, core_ases = _build_graph()
     sim = CorrectedBeaconSimulator(max_segments_per_origin=200)

@@ -19,14 +19,11 @@ import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
-import matplotlib.lines as mlines
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
-import seaborn as sns
 from matplotlib.lines import Line2D
-
 
 # ---------------------------------------------------------------------------
 # JSON (scion_topology.json) → DataFrame bridge
@@ -54,8 +51,6 @@ def _collapse_to_simple_undirected(G: nx.Graph) -> nx.Graph:
 
     priority = {
         "peer": 0,
-        "peer": 0,
-        "core": 1,
         "core": 1,
         "parent-child": 2,
         "parent_child": 2,
@@ -101,7 +96,9 @@ def _isd_for_node(n: int, isds_meta: List[Any]) -> int:
     return int(0)
 
 
-def json_topology_to_frames(json_path: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+def json_topology_to_frames(
+    json_path: Path,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """Convert ``scion_topology.json`` into ``nodes`` / ``edges`` DataFrames."""
     G_raw, core_ases, isds = load_scion_topology_json(json_path)
     H = _collapse_to_simple_undirected(G_raw)
@@ -154,14 +151,18 @@ def json_topology_to_frames(json_path: Path) -> Tuple[pd.DataFrame, pd.DataFrame
 
         erows = []
         for u, v, d in H.edges(data=True):
-            erows.append({"u": int(u), "v": int(v), "type": str(d.get("type", "UNKNOWN"))})
+            erows.append(
+                {"u": int(u), "v": int(v), "type": str(d.get("type", "UNKNOWN"))}
+            )
         edge_df = pd.DataFrame(erows)
 
     meta = {"source": "json", "core_ases": sorted(core_ases), "n_isds": len(isds)}
     return node_df, edge_df, meta
 
 
-def load_topology_tables(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+def load_topology_tables(
+    path: Path,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
     """Load ``nodes`` / ``edges`` frames from a pickle topology or ``scion_topology.json``."""
     path = Path(path)
     if path.suffix.lower() == ".json":
@@ -176,35 +177,33 @@ def load_topology_tables(path: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[s
 
 class TopologyVisualizer:
     """Create visualizations of SCION topologies"""
-    
+
     # Color schemes
-    ISD_COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', '#F7DC6F']
-    CORE_COLOR = '#2C3E50'
-    NON_CORE_COLOR = '#95A5A6'
-    
+    ISD_COLORS = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#98D8C8", "#F7DC6F"]
+    CORE_COLOR = "#2C3E50"
+    NON_CORE_COLOR = "#95A5A6"
+
     # Link styles — keys match ``edge['type']`` from pickles *or* JSON
     # (``convert_brite_file`` uses SCREAMING_SNAKE, e.g. ``PARENT_CHILD``).
     LINK_STYLES = {
-        "core": {"color": "#E74C3C", "width": 3.0, "style": "-"},
         "core": {"color": "#E74C3C", "width": 3.0, "style": "-"},
         "parent-child": {"color": "#3498DB", "width": 2.0, "style": "-"},
         "parent_child": {"color": "#3498DB", "width": 2.0, "style": "-"},
         "child-parent": {"color": "#3498DB", "width": 2.0, "style": "--"},
         "CHILD_PARENT": {"color": "#3498DB", "width": 2.0, "style": "--"},
         "peer": {"color": "#27AE60", "width": 1.5, "style": ":"},
-        "peer": {"color": "#1e8449", "width": 2.0, "style": "-"},
         "UNKNOWN": {"color": "#95a5a6", "width": 1.0, "style": "-"},
     }
     DEFAULT_LINK_STYLE = {"color": "#7f8c8d", "width": 1.2, "style": "-"}
-    
+
     def __init__(self, figsize: Tuple[int, int] = (16, 12)):
         """
         Args:
             figsize: Figure size for plots
         """
         self.figsize = figsize
-        plt.style.use('seaborn-v0_8-white')
-        
+        plt.style.use("seaborn-v0_8-white")
+
     def visualize_topology(
         self,
         topology_path: Path,
@@ -223,7 +222,7 @@ class TopologyVisualizer:
         node_df, edge_df, _meta = load_topology_tables(Path(topology_path))
         topology_dict = {"nodes": node_df, "edges": edge_df}
 
-        fig = plt.figure(figsize=self.figsize)
+        _ = plt.figure(figsize=self.figsize)
 
         ax_main = plt.subplot2grid((3, 3), (0, 0), colspan=2, rowspan=3)
         self._draw_topology(
@@ -253,7 +252,7 @@ class TopologyVisualizer:
 
         if write_extras:
             self._create_individual_plots(topology_dict, output_path.parent, dpi=dpi)
-        
+
     def _draw_topology(
         self,
         ax,
@@ -283,15 +282,22 @@ class TopologyVisualizer:
                 G.add_edge(int(edge["u"]), int(edge["v"]), type=str(edge["type"]))
                 seen_edges.add(edge_key)
 
-        pos = {int(row["as_id"]): (float(row["x"]), float(row["y"])) for _, row in node_df.iterrows()}
+        pos = {
+            int(row["as_id"]): (float(row["x"]), float(row["y"]))
+            for _, row in node_df.iterrows()
+        }
 
         self._draw_isd_regions(ax, node_df, pos)
 
         # One pass per distinct edge type present (so PEER / unknown types still render)
-        types_in_graph = sorted({d.get("type", "UNKNOWN") for _, _, d in G.edges(data=True)})
+        types_in_graph = sorted(
+            {d.get("type", "UNKNOWN") for _, _, d in G.edges(data=True)}
+        )
         for link_type in types_in_graph:
             style = self.LINK_STYLES.get(str(link_type), self.DEFAULT_LINK_STYLE)
-            edges = [(u, v) for u, v, d in G.edges(data=True) if d.get("type") == link_type]
+            edges = [
+                (u, v) for u, v, d in G.edges(data=True) if d.get("type") == link_type
+            ]
             if not edges:
                 continue
             nx.draw_networkx_edges(
@@ -306,7 +312,9 @@ class TopologyVisualizer:
             )
 
         core_nodes = node_df[node_df["role"] == "core"]["as_id"].astype(int).tolist()
-        non_core_nodes = node_df[node_df["role"] == "non-core"]["as_id"].astype(int).tolist()
+        non_core_nodes = (
+            node_df[node_df["role"] == "non-core"]["as_id"].astype(int).tolist()
+        )
 
         if non_core_nodes:
             nx.draw_networkx_nodes(
@@ -377,7 +385,9 @@ class TopologyVisualizer:
                 label="Non-core AS (stub / child)",
             ),
         ]
-        leg_as = ax.legend(handles=as_legends, title="AS role", loc="upper left", frameon=True)
+        leg_as = ax.legend(
+            handles=as_legends, title="AS role", loc="upper left", frameon=True
+        )
         ax.add_artist(leg_as)
 
         link_legends = []
@@ -393,9 +403,16 @@ class TopologyVisualizer:
                     label=f"{lt} link",
                 )
             )
-        ax.legend(handles=link_legends, title="Link type (all AS–AS links)", loc="lower left", frameon=True)
+        ax.legend(
+            handles=link_legends,
+            title="Link type (all AS–AS links)",
+            loc="lower left",
+            frameon=True,
+        )
 
-        ax.set_title("SCION topology (geographic layout)", fontsize=16, fontweight="bold")
+        ax.set_title(
+            "SCION topology (geographic layout)", fontsize=16, fontweight="bold"
+        )
         ax.set_aspect("equal", adjustable="datalim")
         ax.margins(0.06)
         if axis_style == "off":
@@ -409,51 +426,58 @@ class TopologyVisualizer:
                 ax.grid(True, alpha=0.25)
             else:
                 ax.grid(False)
-        
+
     def _draw_isd_regions(self, ax, node_df: pd.DataFrame, pos: Dict):
         """Draw convex hulls around ISDs"""
         from scipy.spatial import ConvexHull
-        
-        for isd in sorted(node_df['isd'].unique()):
-            isd_nodes = node_df[node_df['isd'] == isd]['as_id'].tolist()
+
+        for isd in sorted(node_df["isd"].unique()):
+            isd_nodes = node_df[node_df["isd"] == isd]["as_id"].tolist()
             if len(isd_nodes) < 3:
                 continue
-                
+
             # Get positions
             points = np.array([pos[n] for n in isd_nodes])
-            
+
             # Compute convex hull
             try:
                 hull = ConvexHull(points)
-                
+
                 # Draw hull with transparency
                 hull_points = points[hull.vertices]
                 color = self.ISD_COLORS[isd % len(self.ISD_COLORS)]
-                
+
                 # Add padding
                 center = hull_points.mean(axis=0)
                 hull_points = center + 1.1 * (hull_points - center)
-                
+
                 patch = plt.Polygon(
                     hull_points,
                     alpha=0.2,
                     facecolor=color,
                     edgecolor=color,
                     linewidth=2,
-                    linestyle='--'
+                    linestyle="--",
                 )
                 ax.add_patch(patch)
-                
+
                 # Add ISD label
-                ax.text(center[0], center[1], f'ISD {isd}',
-                       fontsize=20, fontweight='bold',
-                       ha='center', va='center',
-                       color=color, alpha=0.7)
-                       
+                ax.text(
+                    center[0],
+                    center[1],
+                    f"ISD {isd}",
+                    fontsize=20,
+                    fontweight="bold",
+                    ha="center",
+                    va="center",
+                    color=color,
+                    alpha=0.7,
+                )
+
             except Exception:
                 # Skip if hull computation fails
                 pass
-                
+
     def _plot_degree_distribution(self, ax, node_df: pd.DataFrame):
         """Plot degree distribution"""
         degrees = node_df["degree"].values
@@ -467,18 +491,23 @@ class TopologyVisualizer:
             bins = range(dmin, dmax + 2)
 
         ax.hist(degrees, bins=bins, alpha=0.7, color="#3498DB", edgecolor="black")
-        
-        ax.set_title('Degree Distribution', fontsize=12, fontweight='bold')
-        ax.set_xlabel('Degree')
-        ax.set_ylabel('Count')
+
+        ax.set_title("Degree Distribution", fontsize=12, fontweight="bold")
+        ax.set_xlabel("Degree")
+        ax.set_ylabel("Count")
         ax.grid(True, alpha=0.3)
-        
+
         # Add statistics
         mean_degree = degrees.mean()
-        ax.axvline(mean_degree, color='red', linestyle='--', alpha=0.7,
-                  label=f'Mean: {mean_degree:.1f}')
+        ax.axvline(
+            mean_degree,
+            color="red",
+            linestyle="--",
+            alpha=0.7,
+            label=f"Mean: {mean_degree:.1f}",
+        )
         ax.legend()
-        
+
     def _plot_isd_statistics(self, ax, node_df: pd.DataFrame, edge_df: pd.DataFrame):
         """Plot ISD composition"""
         if len(node_df) == 0:
@@ -487,35 +516,41 @@ class TopologyVisualizer:
         isd_stats = []
 
         for isd in sorted(node_df["isd"].unique()):
-            isd_nodes = node_df[node_df['isd'] == isd]
-            
+            isd_nodes = node_df[node_df["isd"] == isd]
+
             stats = {
-                'ISD': isd,
-                'Total': len(isd_nodes),
-                'Core': len(isd_nodes[isd_nodes['role'] == 'core']),
-                'Non-core': len(isd_nodes[isd_nodes['role'] == 'non-core'])
+                "ISD": isd,
+                "Total": len(isd_nodes),
+                "Core": len(isd_nodes[isd_nodes["role"] == "core"]),
+                "Non-core": len(isd_nodes[isd_nodes["role"] == "non-core"]),
             }
             isd_stats.append(stats)
-            
+
         isd_df = pd.DataFrame(isd_stats)
-        
+
         # Stacked bar chart
         x = np.arange(len(isd_df))
         width = 0.6
-        
-        ax.bar(x, isd_df['Core'], width, label='Core',
-               color=self.CORE_COLOR, alpha=0.8)
-        ax.bar(x, isd_df['Non-core'], width, bottom=isd_df['Core'],
-               label='Non-core', color=self.NON_CORE_COLOR, alpha=0.8)
-        
-        ax.set_title('ISD Composition', fontsize=12, fontweight='bold')
-        ax.set_xlabel('ISD')
-        ax.set_ylabel('Number of ASes')
+
+        ax.bar(x, isd_df["Core"], width, label="Core", color=self.CORE_COLOR, alpha=0.8)
+        ax.bar(
+            x,
+            isd_df["Non-core"],
+            width,
+            bottom=isd_df["Core"],
+            label="Non-core",
+            color=self.NON_CORE_COLOR,
+            alpha=0.8,
+        )
+
+        ax.set_title("ISD Composition", fontsize=12, fontweight="bold")
+        ax.set_xlabel("ISD")
+        ax.set_ylabel("Number of ASes")
         ax.set_xticks(x)
-        ax.set_xticklabels(isd_df['ISD'])
+        ax.set_xticklabels(isd_df["ISD"])
         ax.legend()
-        ax.grid(True, axis='y', alpha=0.3)
-        
+        ax.grid(True, axis="y", alpha=0.3)
+
     def _plot_link_statistics(self, ax, edge_df: pd.DataFrame):
         """Plot link type distribution"""
         if len(edge_df) == 0:
@@ -526,22 +561,22 @@ class TopologyVisualizer:
             self.LINK_STYLES.get(str(lt), self.DEFAULT_LINK_STYLE)["color"]
             for lt in link_counts.index
         ]
-        
+
         wedges, texts, autotexts = ax.pie(
             link_counts.values,
             labels=link_counts.index,
             colors=colors,
-            autopct='%1.1f%%',
-            startangle=90
+            autopct="%1.1f%%",
+            startangle=90,
         )
-        
-        ax.set_title('Link Type Distribution', fontsize=12, fontweight='bold')
-        
+
+        ax.set_title("Link Type Distribution", fontsize=12, fontweight="bold")
+
         # Make percentage text bold
         for autotext in autotexts:
-            autotext.set_color('white')
-            autotext.set_fontweight('bold')
-            
+            autotext.set_color("white")
+            autotext.set_fontweight("bold")
+
     def _create_individual_plots(
         self, topology: Dict, output_dir: Path, *, dpi: int = 300
     ) -> None:
@@ -561,39 +596,52 @@ class TopologyVisualizer:
 
         fig, ax = plt.subplots(figsize=(10, 8))
         self._create_connectivity_matrix(ax, node_df, edge_df)
-        plt.savefig(output_dir / "connectivity_matrix.png", dpi=dpi, bbox_inches="tight")
+        plt.savefig(
+            output_dir / "connectivity_matrix.png", dpi=dpi, bbox_inches="tight"
+        )
         plt.close()
-        
+
     def _create_isd_map(self, ax, node_df: pd.DataFrame):
         """Create ISD membership map"""
         # Scatter plot colored by ISD
-        for isd in sorted(node_df['isd'].unique()):
-            isd_nodes = node_df[node_df['isd'] == isd]
+        for isd in sorted(node_df["isd"].unique()):
+            isd_nodes = node_df[node_df["isd"] == isd]
             color = self.ISD_COLORS[isd % len(self.ISD_COLORS)]
-            
+
             # Plot non-core nodes
-            non_core = isd_nodes[isd_nodes['role'] == 'non-core']
-            ax.scatter(non_core['x'], non_core['y'], 
-                      c=color, s=100, alpha=0.6,
-                      label=f'ISD {isd}')
-            
+            non_core = isd_nodes[isd_nodes["role"] == "non-core"]
+            ax.scatter(
+                non_core["x"],
+                non_core["y"],
+                c=color,
+                s=100,
+                alpha=0.6,
+                label=f"ISD {isd}",
+            )
+
             # Plot core nodes
-            core = isd_nodes[isd_nodes['role'] == 'core']
-            ax.scatter(core['x'], core['y'],
-                      c=color, s=300, marker='s',
-                      edgecolors='black', linewidths=2)
-                      
-        ax.set_title('ISD Membership Map', fontsize=16, fontweight='bold')
-        ax.set_xlabel('X Coordinate')
-        ax.set_ylabel('Y Coordinate')
+            core = isd_nodes[isd_nodes["role"] == "core"]
+            ax.scatter(
+                core["x"],
+                core["y"],
+                c=color,
+                s=300,
+                marker="s",
+                edgecolors="black",
+                linewidths=2,
+            )
+
+        ax.set_title("ISD Membership Map", fontsize=16, fontweight="bold")
+        ax.set_xlabel("X Coordinate")
+        ax.set_ylabel("Y Coordinate")
         ax.legend()
         ax.grid(True, alpha=0.3)
-        
+
     def _create_core_network(self, ax, node_df: pd.DataFrame, edge_df: pd.DataFrame):
         """Visualize only the core network"""
         core_nodes = node_df[node_df["role"] == "core"]["as_id"].astype(int).tolist()
         core_edges = edge_df[edge_df["type"].isin(("core", "core"))]
-        
+
         # Create core graph
         G = nx.Graph()
         for node in core_nodes:
@@ -604,77 +652,84 @@ class TopologyVisualizer:
             u, v = int(edge["u"]), int(edge["v"])
             if u in core_nodes and v in core_nodes:
                 G.add_edge(u, v)
-                
+
         # Layout
         pos = nx.spring_layout(G, k=2, iterations=50)
-        
+
         # Draw nodes colored by ISD
-        for isd in sorted(node_df['isd'].unique()):
-            isd_core_nodes = [n for n in G.nodes() 
-                             if G.nodes[n]['isd'] == isd]
+        for isd in sorted(node_df["isd"].unique()):
+            isd_core_nodes = [n for n in G.nodes() if G.nodes[n]["isd"] == isd]
             if isd_core_nodes:
                 color = self.ISD_COLORS[isd % len(self.ISD_COLORS)]
                 nx.draw_networkx_nodes(
-                    G, pos, nodelist=isd_core_nodes,
-                    node_color=color, node_size=1000,
-                    node_shape='s', alpha=0.8, ax=ax
+                    G,
+                    pos,
+                    nodelist=isd_core_nodes,
+                    node_color=color,
+                    node_size=1000,
+                    node_shape="s",
+                    alpha=0.8,
+                    ax=ax,
                 )
-                
+
         # Draw edges
         nx.draw_networkx_edges(
-            G, pos, edge_color=self.LINK_STYLES['core']['color'],
-            width=3, alpha=0.7, ax=ax
+            G,
+            pos,
+            edge_color=self.LINK_STYLES["core"]["color"],
+            width=3,
+            alpha=0.7,
+            ax=ax,
         )
-        
+
         # Labels
         nx.draw_networkx_labels(
-            G, pos, font_size=12, font_color='white',
-            font_weight='bold', ax=ax
+            G, pos, font_size=12, font_color="white", font_weight="bold", ax=ax
         )
-        
-        ax.set_title('Core AS Network', fontsize=16, fontweight='bold')
-        ax.axis('off')
-        
-    def _create_connectivity_matrix(self, ax, node_df: pd.DataFrame, edge_df: pd.DataFrame):
+
+        ax.set_title("Core AS Network", fontsize=16, fontweight="bold")
+        ax.axis("off")
+
+    def _create_connectivity_matrix(
+        self, ax, node_df: pd.DataFrame, edge_df: pd.DataFrame
+    ):
         """Create adjacency matrix visualization"""
         n_nodes = len(node_df)
         matrix = np.zeros((n_nodes, n_nodes))
 
         ordered = node_df.sort_values("as_id").reset_index(drop=True)
         as_to_idx = {int(row["as_id"]): i for i, row in ordered.iterrows()}
-        
+
         # Fill matrix
         for _, edge in edge_df.iterrows():
-            i = as_to_idx.get(edge['u'], -1)
-            j = as_to_idx.get(edge['v'], -1)
+            i = as_to_idx.get(edge["u"], -1)
+            j = as_to_idx.get(edge["v"], -1)
             if i >= 0 and j >= 0:
                 # Color code by link type
                 et = str(edge["type"])
                 link_value = {
                     "core": 4,
-                    "core": 4,
                     "parent-child": 3,
-                    "parent_child": 3,
                     "child-parent": 2,
-                    "CHILD_PARENT": 2,
-                    "peer": 1,
                     "peer": 1,
                 }.get(et, 0)
-                
+
                 matrix[i, j] = link_value
                 matrix[j, i] = link_value  # Symmetric
-                
+
         # Plot
-        im = ax.imshow(matrix, cmap='YlOrRd', interpolation='nearest')
-        
+        im = ax.imshow(matrix, cmap="YlOrRd", interpolation="nearest")
+
         # Add colorbar with labels
         cbar = plt.colorbar(im, ax=ax, ticks=[0, 1, 2, 3, 4])
-        cbar.ax.set_yticklabels(['None', 'Peer', 'Child-Parent', 'Parent-Child', 'Core'])
-        
-        ax.set_title('Connectivity Matrix', fontsize=16, fontweight='bold')
-        ax.set_xlabel('AS ID Index')
-        ax.set_ylabel('AS ID Index')
-        
+        cbar.ax.set_yticklabels(
+            ["None", "Peer", "Child-Parent", "Parent-Child", "Core"]
+        )
+
+        ax.set_title("Connectivity Matrix", fontsize=16, fontweight="bold")
+        ax.set_xlabel("AS ID Index")
+        ax.set_ylabel("AS ID Index")
+
         # ISD boundaries (matrix rows/cols follow ``ordered`` sort by AS id)
         isd_boundaries = []
         current_idx = 0
@@ -755,21 +810,21 @@ def create_topology_report(topology_path: Path, output_dir: Path):
     )
 
     stats_report = generate_topology_stats(topology)
-    
-    with open(output_dir / 'topology_stats.txt', 'w') as f:
+
+    with open(output_dir / "topology_stats.txt", "w") as f:
         f.write(stats_report)
-        
+
     print(f"Topology report generated in {output_dir}")
-    
+
 
 def generate_topology_stats(topology: Dict) -> str:
     """Generate detailed statistics report"""
-    node_df = topology['nodes']
-    edge_df = topology['edges']
-    
+    node_df = topology["nodes"]
+    edge_df = topology["edges"]
+
     report = []
     report.append("=== SCION Topology Statistics Report ===\n")
-    
+
     # Basic stats
     report.append(f"Total ASes: {len(node_df)}")
     report.append(f"Total Links: {len(edge_df)}")
@@ -779,15 +834,17 @@ def generate_topology_stats(topology: Dict) -> str:
         report.append(f"Average Degree: {node_df['degree'].mean():.2f}")
     else:
         report.append("Average Degree: n/a")
-    
+
     # ISD details
     report.append("\n=== ISD Breakdown ===")
-    for isd in sorted(node_df['isd'].unique()):
-        isd_nodes = node_df[node_df['isd'] == isd]
-        n_core = len(isd_nodes[isd_nodes['role'] == 'core'])
+    for isd in sorted(node_df["isd"].unique()):
+        isd_nodes = node_df[node_df["isd"] == isd]
+        n_core = len(isd_nodes[isd_nodes["role"] == "core"])
         n_total = len(isd_nodes)
-        report.append(f"ISD {isd}: {n_total} ASes ({n_core} core, {n_total-n_core} non-core)")
-        
+        report.append(
+            f"ISD {isd}: {n_total} ASes ({n_core} core, {n_total - n_core} non-core)"
+        )
+
     # Link analysis
     report.append("\n=== Link Analysis ===")
     if len(edge_df) == 0:
@@ -797,15 +854,15 @@ def generate_topology_stats(topology: Dict) -> str:
         for link_type, count in link_counts.items():
             percentage = (count / len(edge_df)) * 100
             report.append(f"{link_type}: {count} ({percentage:.1f}%)")
-        
+
     # Connectivity
     report.append("\n=== Connectivity Metrics ===")
-    
+
     # Check if graph is connected
     G = nx.Graph()
     for _, edge in edge_df.iterrows():
-        G.add_edge(edge['u'], edge['v'])
-        
+        G.add_edge(edge["u"], edge["v"])
+
     if nx.is_connected(G):
         report.append("✓ Topology is fully connected")
         diameter = nx.diameter(G)
@@ -813,5 +870,5 @@ def generate_topology_stats(topology: Dict) -> str:
     else:
         components = list(nx.connected_components(G))
         report.append(f"⚠ Topology has {len(components)} connected components")
-        
-    return '\n'.join(report)
+
+    return "\n".join(report)

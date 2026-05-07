@@ -317,6 +317,31 @@ class EvaluationPathSelectionEnv:
             "probe_cost_ms": self.total_probe_cost_ms,
             "hour_idx": self.hour_idx,
         }
+
+        max_available_path_bw = 1.0
+
+        # --- NEW: State-Restoring Oracle ---
+        # Save the current probe accounting so we don't penalize the agent 
+        # for our behind-the-scenes bottleneck calculations.
+        saved_bw_probes = self.num_bandwidth_probes
+        saved_lat_probes = self.num_latency_probes
+        saved_cost = self.total_probe_cost_ms
+
+        # Calculate the actual ground-truth bottleneck for every path
+        for path_index in range(self.num_paths()):
+            # Use the official probe function to get the exact math
+            true_metrics = self.probe_path_full(path_index)
+            path_bw = float(true_metrics.get("bandwidth_mbps", 0.0))
+            max_available_path_bw = max(max_available_path_bw, path_bw)
+
+        # Rewind the probe accounting back to what it was
+        self.num_bandwidth_probes = saved_bw_probes
+        self.num_latency_probes = saved_lat_probes
+        self.total_probe_cost_ms = saved_cost
+        # -----------------------------------
+
+        info["max_available_path_bw"] = max_available_path_bw
+
         return np.zeros(5, dtype=np.float32), 0.0, done, info
 
     # ----------------------------------------------------------- introspection

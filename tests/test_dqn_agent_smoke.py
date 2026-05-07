@@ -10,9 +10,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-torch = pytest.importorskip("torch")
-
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
+
+torch = pytest.importorskip("torch")
 
 
 @pytest.fixture

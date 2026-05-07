@@ -60,8 +60,6 @@ with open(run_path / "selected_pair.json", "r") as f:
     selected_pair = json.load(f)
 
 path_store = InMemoryPathStore.load(run_path / "path_store.json")
-# Removed open block
-    
 
 # Reuse the pickle for the rich graph (with edge bandwidth / latency).
 pkl_paths = [
@@ -267,6 +265,7 @@ def _path_static_min_bw(path: Dict) -> float:
 
 
 def _path_static_latency(path: Dict) -> float:
+    """Extract the path's static latency (sum of link latencies) from the store."""
     sm = path.get("static_metrics") or {}
     val = sm.get("total_latency")
     if val is not None:
@@ -426,6 +425,10 @@ link_states_file = run_path / "link_states.pkl"
 with open(link_states_file, "wb") as f:
     pickle.dump(link_states, f)
 print(f"Link states saved to: {link_states_file}")
+link_states_file = run_path / "link_states.json"
+with open(link_states_file, "w") as f:
+    json.dump(link_states, f)
+print(f"Link states json saved to: {link_states_file}")
 
 print("\nTraffic simulation summary:")
 print(f"  - Total days:              {NUM_DAYS}")
