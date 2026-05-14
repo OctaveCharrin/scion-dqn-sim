@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Train the simple DQN agent (single-pair, paper-style).
+"""Train the simple DQN agent (multi-pair, paper-style).
 
-Single-pair counterpart of ``04_train_dqn.py`` for the simpler MLP DQN that
+Multi-pair counterpart of ``04_train_dqn.py`` for the simpler MLP DQN that
 doesn't support action masking. It uses the same stateful environment and the
-same reward shape so the two variants stay comparable.
+same reward shape so the two variants stay comparable while training across a
+pair pool.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import os as _os
 import pickle
 import random
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
@@ -54,19 +55,42 @@ with open(run_path / "link_states.pkl", "rb") as f:
 
 src_as = int(selected_pair["source_as"])
 dst_as = int(selected_pair["destination_as"])
-num_paths = int(selected_pair["num_paths"])
-print(f"\nTraining Simple DQN for AS {src_as} -> AS {dst_as} ({num_paths} paths)")
-
-
-# -----------------------------------------------------------------------------
-# Goodput cap (P95 of static min bandwidths for this pair)
-# -----------------------------------------------------------------------------
-
-_pair_paths = path_store.find_paths(src_as, dst_as) or []
-_min_bws = [
-    float((p.get("static_metrics") or {}).get("min_bandwidth", 100.0))
-    for p in _pair_paths
+pair_pool: List[Tuple[int, int]] = [
+    (int(p[0]), int(p[1]))
+    for p in selected_pair.get("pair_pool", [[src_as, dst_as]])
 ]
+
+if not pair_pool:
+    pair_pool = [(src_as, dst_as)]
+
+
+def _num_paths_for(pair: Tuple[int, int]) -> int:
+    return len(path_store.find_paths(int(pair[0]), int(pair[1])) or [])
+
+
+pair_paths_count: Dict[Tuple[int, int], int] = {p: _num_paths_for(p) for p in pair_pool}
+num_paths = int(
+    max(
+        max(pair_paths_count.values(), default=int(selected_pair.get("num_paths", 1))),
+        int(selected_pair.get("max_num_paths", 1) or 1),
+        int(selected_pair.get("num_paths", 1) or 1),
+        1,
+    )
+)
+print(f"\nTraining Simple DQN across {len(pair_pool)} AS pair(s)")
+print(f"  Action space (max paths over pool): {num_paths}")
+
+
+# -----------------------------------------------------------------------------
+# Goodput cap (P95 of static min bandwidths across the pair pool)
+# -----------------------------------------------------------------------------
+
+_min_bws: List[float] = []
+for pair in pair_pool:
+    for p in path_store.find_paths(int(pair[0]), int(pair[1])) or []:
+        sm = p.get("static_metrics") or {}
+        if "min_bandwidth" in sm:
+            _min_bws.append(float(sm["min_bandwidth"]))
 GOODPUT_CAP_MBPS = max(50.0, float(np.percentile(_min_bws, 95)) if _min_bws else 100.0)
 print(f"  Goodput cap: {GOODPUT_CAP_MBPS:.0f} Mbps")
 
@@ -82,7 +106,7 @@ env = EvaluationPathSelectionEnv(
     link_states=link_states,
     latency_probe_cost_ms=10.0,
     bandwidth_probe_cost_ms=100.0,
-    pair_pool=[(src_as, dst_as)],
+    pair_pool=pair_pool,
     episode_length=EPISODE_LENGTH,
     rng_seed=42,
 )
@@ -165,7 +189,8 @@ def _reward_from_metrics(path_metrics: Dict, env: EvaluationPathSelectionEnv) ->
 # -----------------------------------------------------------------------------
 
 TRAINING_HOURS = list(range(14 * 24))
-NUM_EPISODES = max(200, len(traffic_flows) // EPISODE_LENGTH)
+TARGET_TRAINING_STEPS = max(2_000, min(50_000, 200 * len(pair_pool)))
+NUM_EPISODES = max(50, TARGET_TRAINING_STEPS // EPISODE_LENGTH)
 
 
 
@@ -178,14 +203,16 @@ print(
     f"(~{NUM_EPISODES * EPISODE_LENGTH} steps)..."
 )
 
-start_rng = random.Random(123)
+training_pair_rng = random.Random(123)
+training_hour_rng = random.Random(456)
 episode_rewards: List[float] = []
 episode_probes: List[int] = []
 losses: List[float] = []
 
 for ep in tqdm(range(NUM_EPISODES), desc="Episodes"):
-    start_hour = start_rng.choice(TRAINING_HOURS)
-    env.reset(source_as=src_as, dest_as=dst_as, hour_idx=start_hour)
+    pair = training_pair_rng.choice(pair_pool)
+    start_hour = training_hour_rng.choice(TRAINING_HOURS)
+    env.reset(source_as=pair[0], dest_as=pair[1], hour_idx=start_hour)
     state = _aggregate_state(env, env.hour_idx)
     ep_reward = 0.0
     for step in range(EPISODE_LENGTH):
@@ -226,6 +253,8 @@ torch.save(
         "action_dim": num_paths,
         "goodput_cap_mbps": GOODPUT_CAP_MBPS,
         "reward_weights": {"w1": W1, "w2": W2, "w3": W3, "w4": W4},
+        "pair_pool": [list(p) for p in pair_pool],
+        "max_num_paths": num_paths,
     },
     model_file,
 )
@@ -242,6 +271,8 @@ training_stats = {
     "avg_probes_per_episode": float(np.mean(episode_probes)) if episode_probes else 0.0,
     "reward_weights": {"w1": W1, "w2": W2, "w3": W3, "w4": W4},
     "goodput_cap_mbps": GOODPUT_CAP_MBPS,
+    "pair_pool_size": len(pair_pool),
+    "action_dim": num_paths,
 }
 with open(run_path / "dqn_simple_training_stats.json", "w") as f:
     json.dump(training_stats, f, indent=4)

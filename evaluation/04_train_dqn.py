@@ -74,8 +74,8 @@ pair_pool: List[Tuple[int, int]] = [
     (int(p[0]), int(p[1]))
     for p in selected_pair.get("pair_pool", [[src_as, dst_as]])
 ]
-#TODO: CHANGE THIS
-if pair_pool:
+
+if not pair_pool:
     pair_pool = [(src_as, dst_as)]
 
 
