@@ -13,15 +13,21 @@ from __future__ import annotations
 
 import json
 import pickle
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from _common import resolve_run_dir, topology_dir
 from tqdm import tqdm
+
+_EVAL_DIR = Path(__file__).resolve().parent
+if str(_EVAL_DIR) not in sys.path:
+    sys.path.insert(0, str(_EVAL_DIR))
+from scoring_dqn_state import dict_state
 
 from src.baselines.ecmp import ECMPSelector
 from src.baselines.lowest_latency import LowestLatencySelector
@@ -30,6 +36,8 @@ from src.baselines.scion_default import SCIONDefaultSelector
 from src.baselines.shortest_path import ShortestPathSelector
 from src.baselines.widest_path import WidestPathSelector
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
+from src.rl.dqn_agent_scoring_enhanced import EnhancedPathScoringDQNAgent
+from src.rl.dqn_agent_scoring_simple import SimplePathScoringDQNAgent
 from src.rl.dqn_agent_simple import SimpleDQNAgent
 from src.simulation.evaluation_env import EvaluationPathSelectionEnv
 from src.simulation.path_store import InMemoryPathStore
@@ -75,6 +83,38 @@ try:
     simple_model_checkpoint = torch.load(_simple_model_path, map_location="cpu", weights_only=False)
 except TypeError:
     simple_model_checkpoint = torch.load(_simple_model_path, map_location="cpu")
+
+def _load_checkpoint(path: Path) -> Optional[dict]:
+    if not path.is_file():
+        return None
+    try:
+        return torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location="cpu")
+
+
+_scoring_simple_paths = (
+    run_path / "dqn_scoring_simple_model.pth",
+    run_path / "dqn_scoring_model.pth",
+)
+scoring_simple_checkpoint: Optional[dict] = None
+for _p in _scoring_simple_paths:
+    scoring_simple_checkpoint = _load_checkpoint(_p)
+    if scoring_simple_checkpoint is not None:
+        break
+if scoring_simple_checkpoint is None:
+    print(
+        "\nNote: no simple path-scoring checkpoint "
+        "(dqn_scoring_simple_model.pth / dqn_scoring_model.pth) — skipping scoring_simple_dqn."
+    )
+
+_scoring_enhanced_path = run_path / "dqn_scoring_enhanced_model.pth"
+scoring_enhanced_checkpoint: Optional[dict] = _load_checkpoint(_scoring_enhanced_path)
+if scoring_enhanced_checkpoint is None:
+    print(
+        f"\nNote: no enhanced path-scoring checkpoint at {_scoring_enhanced_path.name} "
+        "— skipping scoring_enhanced_dqn."
+    )
 
 src_as = int(selected_pair["source_as"])
 dst_as = int(selected_pair["destination_as"])
@@ -141,6 +181,41 @@ simple_dqn_agent.q_network.load_state_dict(_q_simple)
 if "target_network" in simple_model_checkpoint:
     simple_dqn_agent.target_network.load_state_dict(simple_model_checkpoint["target_network"])
 simple_dqn_agent.epsilon = 0.0  # No exploration during evaluation
+
+scoring_simple_dqn_agent: Optional[SimplePathScoringDQNAgent] = None
+if scoring_simple_checkpoint is not None:
+    _gdim = int(scoring_simple_checkpoint.get("global_dim", 5))
+    _pdim = int(scoring_simple_checkpoint.get("path_dim", 6))
+    _hdim = int(scoring_simple_checkpoint.get("hidden_dim", 128))
+    scoring_simple_dqn_agent = SimplePathScoringDQNAgent(
+        global_dim=_gdim,
+        path_dim=_pdim,
+        learning_rate=1e-3,
+        hidden_dim=_hdim,
+    )
+    scoring_simple_dqn_agent.q_network.load_state_dict(scoring_simple_checkpoint["q_network"])
+    if "target_network" in scoring_simple_checkpoint:
+        scoring_simple_dqn_agent.target_network.load_state_dict(
+            scoring_simple_checkpoint["target_network"]
+        )
+    scoring_simple_dqn_agent.epsilon = 0.0
+
+scoring_enhanced_dqn_agent: Optional[EnhancedPathScoringDQNAgent] = None
+if scoring_enhanced_checkpoint is not None:
+    _cfg: EnhancedDQNConfig = scoring_enhanced_checkpoint.get("config") or EnhancedDQNConfig()
+    _gdim_e = int(scoring_enhanced_checkpoint.get("global_dim", 5))
+    _pdim_e = int(scoring_enhanced_checkpoint.get("path_dim", 6))
+    scoring_enhanced_dqn_agent = EnhancedPathScoringDQNAgent(
+        global_dim=_gdim_e,
+        path_dim=_pdim_e,
+        config=_cfg,
+    )
+    scoring_enhanced_dqn_agent.q_network.load_state_dict(scoring_enhanced_checkpoint["q_network"])
+    if "target_network" in scoring_enhanced_checkpoint:
+        scoring_enhanced_dqn_agent.target_network.load_state_dict(
+            scoring_enhanced_checkpoint["target_network"]
+        )
+    scoring_enhanced_dqn_agent.epsilon = 0.0
 
 
 # -----------------------------------------------------------------------------
@@ -228,7 +303,16 @@ results: Dict[str, Dict] = defaultdict(
 
 print("\nEvaluating methods...")
 
-for method_name, method in [("dqn", dqn_agent), ("simple_dqn", simple_dqn_agent)] + list(baseline_methods.items()):
+_nn_methods: List[Tuple[str, object]] = [
+    ("dqn", dqn_agent),
+    ("simple_dqn", simple_dqn_agent),
+]
+if scoring_simple_dqn_agent is not None:
+    _nn_methods.append(("scoring_simple_dqn", scoring_simple_dqn_agent))
+if scoring_enhanced_dqn_agent is not None:
+    _nn_methods.append(("scoring_enhanced_dqn", scoring_enhanced_dqn_agent))
+
+for method_name, method in _nn_methods + list(baseline_methods.items()):
     print(f"\n--- {method_name} ---")
     method_results = results[method_name]
 
@@ -248,16 +332,25 @@ for method_name, method in [("dqn", dqn_agent), ("simple_dqn", simple_dqn_agent)
             start_time = time.time()
             path_metrics: Dict = {}
 
-            if method_name in ("dqn", "simple_dqn"):
-                state = _aggregate_state(env, hour_idx)
+            if method_name in ("dqn", "simple_dqn", "scoring_simple_dqn", "scoring_enhanced_dqn"):
                 if method_name == "dqn":
+                    state = _aggregate_state(env, hour_idx)
                     mask = env.action_mask(_action_dim)
                     action = int(dqn_agent.act(state, action_mask=mask))
                     if action >= len(paths):
                         valid = np.where(mask)[0]
                         action = int(valid[0]) if len(valid) > 0 else 0
-                else:
+                elif method_name == "simple_dqn":
+                    state = _aggregate_state(env, hour_idx)
                     action = int(simple_dqn_agent.act(state))
+                    if action >= len(paths):
+                        action = 0
+                elif method_name in ("scoring_simple_dqn", "scoring_enhanced_dqn"):
+                    state_d = dict_state(env, hour_idx, w3, w4)
+                    if state_d["paths"].shape[0] == 0:
+                        pbar.update(1)
+                        continue
+                    action = int(method.act(state_d, evaluate=True))
                     if action >= len(paths):
                         action = 0
 

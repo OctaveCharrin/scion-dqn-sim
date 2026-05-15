@@ -132,8 +132,10 @@ def _per_selection(method_summary):
     return method_summary['total_probes'] / n
 
 
+_DQN_LIKE = ("dqn", "simple_dqn", "scoring_simple_dqn", "scoring_enhanced_dqn", "scoring_dqn")
+
 baseline_probes = np.mean(
-    [_per_selection(summary[m]) for m in summary if m not in ('dqn', 'simple_dqn')]
+    [_per_selection(summary[m]) for m in summary if m not in _DQN_LIKE]
 )
 
 for method in methods_by_reward:
@@ -141,7 +143,7 @@ for method in methods_by_reward:
     latency = f"{summary[method]['latency_mean']:.1f}"
     probes = _per_selection(summary[method])
 
-    if method in ('dqn', 'simple_dqn'):
+    if method in _DQN_LIKE:
         reduction = (
             f"{(baseline_probes - probes) / baseline_probes * 100:.1f}%"
             if baseline_probes
@@ -159,9 +161,15 @@ for method in methods_by_reward:
 # ---------------------------------------------------------------------------
 fig3, ax = plt.subplots(figsize=(COLUMN_WIDTH, 4.0), constrained_layout=True)
 
-methods_ordered = ["dqn", "simple_dqn"] + sorted(
-    [m for m in summary.keys() if m not in ("dqn", "simple_dqn")], 
-    key=lambda m: summary[m].get("total_probes", 0)
+methods_ordered = []
+for _m in ("dqn", "simple_dqn", "scoring_simple_dqn", "scoring_enhanced_dqn", "scoring_dqn"):
+    if _m in summary:
+        methods_ordered.append(_m)
+methods_ordered.extend(
+    sorted(
+        [m for m in summary.keys() if m not in _DQN_LIKE],
+        key=lambda m: summary[m].get("total_probes", 0),
+    )
 )
 
 latency_probes = [
