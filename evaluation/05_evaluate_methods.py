@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
-"""Evaluate path-selection methods on the last 14 days.
+"""Evaluate path-selection methods on the last 14 days (multi-pair).
 
-Mirrors the training pipeline:
-
-* iterates over the **multi-pair** ``pair_pool`` from the beaconing step,
-* uses the same state featurization (no 0.5/0.7 placeholders),
-* attributes probe overhead via ``env.last_probe_cost_ms`` / ``total_probe_cost_ms``
-  rather than recomputing it from a different formula in the harness.
+Uses the unified :class:`~src.simulation.evaluation_env.EvaluationPathSelectionEnv`
+for observations, probing, and reward computation.
 """
 
 from __future__ import annotations
 
 import json
-import pickle
 import sys
 import time
 from collections import defaultdict
@@ -21,13 +16,20 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from _common import resolve_run_dir, topology_dir
+from _common import resolve_run_dir
+from path_selection import (
+    SCORING_GLOBAL_DIM,
+    PATH_FEATURE_DIM,
+    RewardWeights,
+    compute_action_dim,
+    load_run_context,
+    make_env,
+)
 from tqdm import tqdm
 
 _EVAL_DIR = Path(__file__).resolve().parent
 if str(_EVAL_DIR) not in sys.path:
     sys.path.insert(0, str(_EVAL_DIR))
-from scoring_dqn_state import dict_state
 
 from src.baselines.ecmp import ECMPSelector
 from src.baselines.lowest_latency import LowestLatencySelector
@@ -39,50 +41,34 @@ from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
 from src.rl.dqn_agent_scoring_enhanced import EnhancedPathScoringDQNAgent
 from src.rl.dqn_agent_scoring_simple import SimplePathScoringDQNAgent
 from src.rl.dqn_agent_simple import SimpleDQNAgent
-from src.simulation.evaluation_env import EvaluationPathSelectionEnv
-from src.simulation.path_store import InMemoryPathStore
 
-run_dir = resolve_run_dir()
-run_path = Path(run_dir)
+run_path = Path(resolve_run_dir())
 
-
-# -----------------------------------------------------------------------------
-# Inputs
-# -----------------------------------------------------------------------------
-
-_topo_json = topology_dir(run_path) / "scion_topology.json"
-if not _topo_json.is_file():
-    _leg = run_path / "scion_topology.json"
-    _topo_json = _leg if _leg.is_file() else _topo_json
-with open(_topo_json, "r") as f:
-    topology_data = json.load(f)
-
+topology_data, path_store, link_states, pair_pool, _goodput_cap = load_run_context(run_path)
 with open(run_path / "selected_pair.json", "r") as f:
     selected_pair = json.load(f)
 
-path_store = InMemoryPathStore.load(run_path / "path_store.json")
-# Removed open block
-    
+pair_pool: List[Tuple[int, int]] = pair_pool or [
+    (int(selected_pair["source_as"]), int(selected_pair["destination_as"]))
+]
+EVAL_PAIRS = pair_pool[: min(len(pair_pool), 32)]
+EVAL_HOURS = list(range(14 * 24, 28 * 24))
+action_dim = compute_action_dim(path_store, selected_pair)
 
-with open(run_path / "traffic_flows.pkl", "rb") as f:
-    traffic_flows = pickle.load(f)
+print(f"\nEvaluating across {len(EVAL_PAIRS)} pair(s) (of {len(pair_pool)} in pool)")
+print(f"Evaluation horizon: {len(EVAL_HOURS)} hours x {len(EVAL_PAIRS)} pairs")
 
-with open(run_path / "link_states.pkl", "rb") as f:
-    link_states = pickle.load(f)
+reward_weights = RewardWeights()
+env = make_env(
+    topology_data,
+    path_store,
+    link_states,
+    EVAL_PAIRS,
+    episode_length=1,
+    rng_seed=7,
+    reward_weights=reward_weights,
+)
 
-# Trained DQN checkpoint (from 04_train_dqn.py).
-_model_path = run_path / "dqn_model.pth"
-try:
-    model_checkpoint = torch.load(_model_path, map_location="cpu", weights_only=False)
-except TypeError:
-    model_checkpoint = torch.load(_model_path, map_location="cpu")
-
-# Trained Simple DQN checkpoint (from 04_train_simple_dqn.py).
-_simple_model_path = run_path / "dqn_simple_model.pth"
-try:
-    simple_model_checkpoint = torch.load(_simple_model_path, map_location="cpu", weights_only=False)
-except TypeError:
-    simple_model_checkpoint = torch.load(_simple_model_path, map_location="cpu")
 
 def _load_checkpoint(path: Path) -> Optional[dict]:
     if not path.is_file():
@@ -93,190 +79,81 @@ def _load_checkpoint(path: Path) -> Optional[dict]:
         return torch.load(path, map_location="cpu")
 
 
-_scoring_simple_paths = (
-    run_path / "dqn_scoring_simple_model.pth",
-    run_path / "dqn_scoring_model.pth",
-)
-scoring_simple_checkpoint: Optional[dict] = None
-for _p in _scoring_simple_paths:
-    scoring_simple_checkpoint = _load_checkpoint(_p)
-    if scoring_simple_checkpoint is not None:
-        break
-if scoring_simple_checkpoint is None:
-    print(
-        "\nNote: no simple path-scoring checkpoint "
-        "(dqn_scoring_simple_model.pth / dqn_scoring_model.pth) — skipping scoring_simple_dqn."
-    )
+# --- Load trained agents -------------------------------------------------------
 
-_scoring_enhanced_path = run_path / "dqn_scoring_enhanced_model.pth"
-scoring_enhanced_checkpoint: Optional[dict] = _load_checkpoint(_scoring_enhanced_path)
-if scoring_enhanced_checkpoint is None:
-    print(
-        f"\nNote: no enhanced path-scoring checkpoint at {_scoring_enhanced_path.name} "
-        "— skipping scoring_enhanced_dqn."
-    )
-
-src_as = int(selected_pair["source_as"])
-dst_as = int(selected_pair["destination_as"])
-
-pair_pool: List[Tuple[int, int]] = [
-    (int(p[0]), int(p[1])) for p in selected_pair.get("pair_pool", [[src_as, dst_as]])
-]
-
-if not pair_pool:
-    pair_pool = [(src_as, dst_as)]
-
-EVAL_PAIRS = pair_pool[: min(len(pair_pool), 32)]  # cap to keep eval bounded
-print(f"\nEvaluating across {len(EVAL_PAIRS)} pair(s) (of {len(pair_pool)} in pool)")
-
-
-# Hours 14*24..28*24 form the evaluation window.
-EVAL_HOURS = list(range(14 * 24, 28 * 24))
-print(f"Evaluation horizon: {len(EVAL_HOURS)} hours x {len(EVAL_PAIRS)} pairs")
-
-
-# -----------------------------------------------------------------------------
-# Environment
-# -----------------------------------------------------------------------------
-
-env = EvaluationPathSelectionEnv(
-    topology_data=topology_data,
-    path_store=path_store,
-    link_states=link_states,
-    latency_probe_cost_ms=10.0,
-    bandwidth_probe_cost_ms=100.0,
-    per_hop_probe_cost_ms=0.5,
-    per_hop_full_probe_cost_ms=20.0,
-    pair_pool=EVAL_PAIRS,
-    episode_length=1,
-    rng_seed=7,
-)
-
-
-# -----------------------------------------------------------------------------
-# DQN agent (reload checkpoint)
-# -----------------------------------------------------------------------------
-
-_config: EnhancedDQNConfig = model_checkpoint["config"]
-_state_dim = int(model_checkpoint.get("state_dim", 5))
-_action_dim = int(model_checkpoint.get("action_dim", selected_pair.get("num_paths", 1)))
-
-dqn_agent = EnhancedDQNAgent(_state_dim, _action_dim, _config)
-_q = model_checkpoint.get("q_network") or model_checkpoint.get("model_state_dict")
-dqn_agent.q_network.load_state_dict(_q)
-if "target_network" in model_checkpoint:
-    dqn_agent.target_network.load_state_dict(model_checkpoint["target_network"])
-dqn_agent.epsilon = 0.0  # No exploration during evaluation
-
-_state_dim_simple = int(simple_model_checkpoint.get("state_dim", 5))
-_action_dim_simple = int(simple_model_checkpoint.get("action_dim", selected_pair.get("num_paths", 1)))
-
-simple_dqn_agent = SimpleDQNAgent(
-    state_dim=_state_dim_simple,
-    action_dim=_action_dim_simple,
-    learning_rate=1e-3,
-)
-_q_simple = simple_model_checkpoint.get("q_network")
-simple_dqn_agent.q_network.load_state_dict(_q_simple)
-if "target_network" in simple_model_checkpoint:
-    simple_dqn_agent.target_network.load_state_dict(simple_model_checkpoint["target_network"])
-simple_dqn_agent.epsilon = 0.0  # No exploration during evaluation
-
+dqn_agent: Optional[EnhancedDQNAgent] = None
+simple_dqn_agent: Optional[SimpleDQNAgent] = None
 scoring_simple_dqn_agent: Optional[SimplePathScoringDQNAgent] = None
-if scoring_simple_checkpoint is not None:
-    _gdim = int(scoring_simple_checkpoint.get("global_dim", 5))
-    _pdim = int(scoring_simple_checkpoint.get("path_dim", 6))
-    _hdim = int(scoring_simple_checkpoint.get("hidden_dim", 128))
-    scoring_simple_dqn_agent = SimplePathScoringDQNAgent(
-        global_dim=_gdim,
-        path_dim=_pdim,
-        learning_rate=1e-3,
-        hidden_dim=_hdim,
-    )
-    scoring_simple_dqn_agent.q_network.load_state_dict(scoring_simple_checkpoint["q_network"])
-    if "target_network" in scoring_simple_checkpoint:
-        scoring_simple_dqn_agent.target_network.load_state_dict(
-            scoring_simple_checkpoint["target_network"]
-        )
-    scoring_simple_dqn_agent.epsilon = 0.0
-
 scoring_enhanced_dqn_agent: Optional[EnhancedPathScoringDQNAgent] = None
-if scoring_enhanced_checkpoint is not None:
-    _cfg: EnhancedDQNConfig = scoring_enhanced_checkpoint.get("config") or EnhancedDQNConfig()
-    _gdim_e = int(scoring_enhanced_checkpoint.get("global_dim", 5))
-    _pdim_e = int(scoring_enhanced_checkpoint.get("path_dim", 6))
-    scoring_enhanced_dqn_agent = EnhancedPathScoringDQNAgent(
-        global_dim=_gdim_e,
-        path_dim=_pdim_e,
-        config=_cfg,
-    )
-    scoring_enhanced_dqn_agent.q_network.load_state_dict(scoring_enhanced_checkpoint["q_network"])
-    if "target_network" in scoring_enhanced_checkpoint:
-        scoring_enhanced_dqn_agent.target_network.load_state_dict(
-            scoring_enhanced_checkpoint["target_network"]
+
+_model_path = run_path / "dqn_model.pth"
+if _model_path.is_file():
+    model_checkpoint = _load_checkpoint(_model_path)
+    if model_checkpoint:
+        config: EnhancedDQNConfig = model_checkpoint["config"]
+        dqn_agent = EnhancedDQNAgent(
+            int(model_checkpoint.get("state_dim", 5)),
+            int(model_checkpoint.get("action_dim", action_dim)),
+            config,
         )
+        dqn_agent.q_network.load_state_dict(
+            model_checkpoint.get("q_network") or model_checkpoint["model_state_dict"]
+        )
+        if "target_network" in model_checkpoint:
+            dqn_agent.target_network.load_state_dict(model_checkpoint["target_network"])
+        dqn_agent.epsilon = 0.0
+        rw = model_checkpoint.get("reward_weights")
+        if rw:
+            reward_weights = RewardWeights.from_mapping(rw)
+
+_simple_path = run_path / "dqn_simple_model.pth"
+if _simple_path.is_file():
+    ckpt = _load_checkpoint(_simple_path)
+    if ckpt:
+        simple_dqn_agent = SimpleDQNAgent(
+            state_dim=int(ckpt.get("state_dim", 5)),
+            action_dim=int(ckpt.get("action_dim", action_dim)),
+            learning_rate=1e-3,
+        )
+        simple_dqn_agent.q_network.load_state_dict(ckpt["q_network"])
+        if "target_network" in ckpt:
+            simple_dqn_agent.target_network.load_state_dict(ckpt["target_network"])
+        simple_dqn_agent.epsilon = 0.0
+
+for ckpt_path, variant in (
+    (run_path / "dqn_scoring_simple_model.pth", "simple"),
+    (run_path / "dqn_scoring_model.pth", "simple"),
+):
+    ckpt = _load_checkpoint(ckpt_path)
+    if ckpt and scoring_simple_dqn_agent is None:
+        scoring_simple_dqn_agent = SimplePathScoringDQNAgent(
+            global_dim=int(ckpt.get("global_dim", SCORING_GLOBAL_DIM)),
+            path_dim=int(ckpt.get("path_dim", PATH_FEATURE_DIM)),
+            hidden_dim=int(ckpt.get("hidden_dim", 128)),
+        )
+        scoring_simple_dqn_agent.q_network.load_state_dict(ckpt["q_network"])
+        if "target_network" in ckpt:
+            scoring_simple_dqn_agent.target_network.load_state_dict(ckpt["target_network"])
+        scoring_simple_dqn_agent.epsilon = 0.0
+        if ckpt.get("reward_weights"):
+            reward_weights = RewardWeights.from_mapping(ckpt["reward_weights"])
+        break
+
+_enh_path = run_path / "dqn_scoring_enhanced_model.pth"
+_enh_ckpt = _load_checkpoint(_enh_path)
+if _enh_ckpt:
+    cfg = _enh_ckpt.get("config") or EnhancedDQNConfig()
+    scoring_enhanced_dqn_agent = EnhancedPathScoringDQNAgent(
+        global_dim=int(_enh_ckpt.get("global_dim", SCORING_GLOBAL_DIM)),
+        path_dim=int(_enh_ckpt.get("path_dim", PATH_FEATURE_DIM)),
+        config=cfg,
+    )
+    scoring_enhanced_dqn_agent.q_network.load_state_dict(_enh_ckpt["q_network"])
+    if "target_network" in _enh_ckpt:
+        scoring_enhanced_dqn_agent.target_network.load_state_dict(_enh_ckpt["target_network"])
     scoring_enhanced_dqn_agent.epsilon = 0.0
 
-
-# -----------------------------------------------------------------------------
-# Reward & state featurization (must match 04_train_dqn.py)
-# -----------------------------------------------------------------------------
-
-w1, w2, w3, w4 = 0.7, 0.3, 0.5, 0.5
-_rw = model_checkpoint.get("reward_weights") or {}
-w1 = float(_rw.get("w1", w1))
-w2 = float(_rw.get("w2", w2))
-w3 = float(_rw.get("w3", w3))
-w4 = float(_rw.get("w4", w4))
-
-
-def _aggregate_state(env: EvaluationPathSelectionEnv, hour_idx: int) -> np.ndarray:
-    day = (hour_idx // 24) % 7
-    hour = hour_idx % 24
-    f0 = day / 6.0
-    f1 = hour / 23.0
-    states = list(env.current_link_states.values())
-    if not states:
-        return np.array([f0, f1, 0.0, 0.0, 0.0], dtype=np.float32)
-    utils = [float(s.get("utilization", 0.0)) for s in states]
-    losses = [float(s.get("loss_rate", 0.0)) for s in states]
-    lats = [min(100.0, float(s.get("latency_ms", 50.0))) / 100.0 for s in states]
-    trusts = [
-        max(0.0, min(1.0, 1.0 - (w3 * loss + w4 * lat)))
-        for loss, lat in zip(losses, lats)
-    ]
-    f2 = float(np.mean(utils)) if utils else 0.0
-    f3 = float(np.mean(trusts)) if trusts else 0.0
-    f4 = float(np.mean([1.0 if u > 0.7 else 0.0 for u in utils])) if utils else 0.0
-    return np.array([f0, f1, f2, f3, f4], dtype=np.float32)
-
-
-def _compute_reward(actual_metrics: Dict, env: EvaluationPathSelectionEnv) -> float:
-    bw = float(actual_metrics.get("bandwidth_mbps") or 0.0)
-    
-    # --- NEW: Dynamic Local Normalization ---
-    # Find the maximum bandwidth actually available for this pair at this hour
-    states = list(env.current_link_states.values())
-    if states:
-        max_possible_bw = max([float(s.get("available_bandwidth_mbps", 1.0)) for s in states])
-        max_possible_bw = max(max_possible_bw, 1.0) # Prevent division by zero
-    else:
-        max_possible_bw = 100.0 # Fallback 
-        
-    # Now, if the agent picks the widest path, goodput is exactly 1.0
-    goodput = max(0.0, min(bw / max_possible_bw, 1.0))
-    
-    # --- REST OF THE FUNCTION REMAINS UNCHANGED ---
-    loss = float(actual_metrics.get("loss_rate", 0.0))
-    delay = min(100.0, float(actual_metrics.get("latency_ms", 50.0))) / 100.0
-    trust = max(0.0, min(1.0, 1.0 - (w3 * loss + w4 * delay)))
-    
-    return float(2.0 * (w1 * goodput + w2 * trust) - 1.0)
-
-
-# -----------------------------------------------------------------------------
-# Methods under evaluation
-# -----------------------------------------------------------------------------
+env.reward_weights = reward_weights
 
 baseline_methods = {
     "shortest_path": ShortestPathSelector(),
@@ -286,7 +163,6 @@ baseline_methods = {
     "random": RandomSelector(),
     "scion_default": SCIONDefaultSelector(),
 }
-
 
 results: Dict[str, Dict] = defaultdict(
     lambda: {
@@ -301,26 +177,34 @@ results: Dict[str, Dict] = defaultdict(
     }
 )
 
-print("\nEvaluating methods...")
-
-_nn_methods: List[Tuple[str, object]] = [
-    ("dqn", dqn_agent),
-    ("simple_dqn", simple_dqn_agent),
-]
+_nn_methods: List[Tuple[str, object]] = []
+if dqn_agent is not None:
+    _nn_methods.append(("dqn", dqn_agent))
+if simple_dqn_agent is not None:
+    _nn_methods.append(("simple_dqn", simple_dqn_agent))
 if scoring_simple_dqn_agent is not None:
     _nn_methods.append(("scoring_simple_dqn", scoring_simple_dqn_agent))
 if scoring_enhanced_dqn_agent is not None:
     _nn_methods.append(("scoring_enhanced_dqn", scoring_enhanced_dqn_agent))
 
+
+def _record_step(method_results: Dict, info: Dict, reward: float, selection_time_ms: float) -> None:
+    pm = info["path_metrics"]
+    method_results["rewards"].append(reward)
+    method_results["latencies"].append(float(pm.get("latency_ms", 50.0)))
+    bw_val = pm.get("bandwidth_mbps")
+    method_results["bandwidths"].append(float(bw_val) if bw_val is not None else 0.0)
+    method_results["losses"].append(float(pm.get("loss_rate", 0.0)))
+    method_results["selection_times_ms"].append(selection_time_ms)
+
+
+print("\nEvaluating methods...")
+
 for method_name, method in _nn_methods + list(baseline_methods.items()):
     print(f"\n--- {method_name} ---")
     method_results = results[method_name]
+    pbar = tqdm(total=len(EVAL_HOURS) * len(EVAL_PAIRS), desc=method_name, ncols=80)
 
-    pbar = tqdm(
-        total=len(EVAL_HOURS) * len(EVAL_PAIRS),
-        desc=method_name,
-        ncols=80,
-    )
     for hour_idx in EVAL_HOURS:
         for pair in EVAL_PAIRS:
             env.reset(source_as=pair[0], dest_as=pair[1], hour_idx=hour_idx)
@@ -329,39 +213,47 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
                 pbar.update(1)
                 continue
 
-            start_time = time.time()
-            path_metrics: Dict = {}
+            t0 = time.time()
+            step_probe_cost = 0.0
 
-            if method_name in ("dqn", "simple_dqn", "scoring_simple_dqn", "scoring_enhanced_dqn"):
-                if method_name == "dqn":
-                    state = _aggregate_state(env, hour_idx)
-                    mask = env.action_mask(_action_dim)
-                    action = int(dqn_agent.act(state, action_mask=mask))
-                    if action >= len(paths):
-                        valid = np.where(mask)[0]
-                        action = int(valid[0]) if len(valid) > 0 else 0
-                elif method_name == "simple_dqn":
-                    state = _aggregate_state(env, hour_idx)
-                    action = int(simple_dqn_agent.act(state))
-                    if action >= len(paths):
-                        action = 0
-                elif method_name in ("scoring_simple_dqn", "scoring_enhanced_dqn"):
-                    state_d = dict_state(env, hour_idx, w3, w4)
-                    if state_d["paths"].shape[0] == 0:
-                        pbar.update(1)
-                        continue
-                    action = int(method.act(state_d, evaluate=True))
-                    if action >= len(paths):
-                        action = 0
-
-                # Selective probing: probe only the chosen path.
-                path_metrics = env.probe_path_full(action)
-                method_results["bandwidth_probes"] += 1
+            if method_name == "dqn":
+                state = env.observe_flat()
+                mask = env.action_mask(action_dim)
+                action = int(dqn_agent.act(state, action_mask=mask))
+                if action >= len(paths):
+                    valid = np.where(mask)[0]
+                    action = int(valid[0]) if len(valid) > 0 else 0
+                reward, _, info = env.apply_action(action, probe="full")
                 method_results["latency_probes"] += 1
-                method_results["total_probe_time_ms"] += env.last_probe_cost_ms
+                method_results["bandwidth_probes"] += 1
+                method_results["total_probe_time_ms"] += info["step_probe_cost_ms"]
+
+            elif method_name == "simple_dqn":
+                state = env.observe_flat()
+                action = int(simple_dqn_agent.act(state))
+                if action >= len(paths):
+                    action = 0
+                reward, _, info = env.apply_action(action, probe="full")
+                method_results["latency_probes"] += 1
+                method_results["bandwidth_probes"] += 1
+                method_results["total_probe_time_ms"] += info["step_probe_cost_ms"]
+
+            elif method_name in ("scoring_simple_dqn", "scoring_enhanced_dqn"):
+                state_d = env.observe_scoring()
+                if state_d["paths"].shape[0] == 0:
+                    pbar.update(1)
+                    continue
+                action = int(method.act(state_d, evaluate=True))
+                if action >= len(paths):
+                    action = 0
+                reward, _, info = env.apply_action(action, probe="full")
+                method_results["latency_probes"] += 1
+                method_results["bandwidth_probes"] += 1
+                method_results["total_probe_time_ms"] += info["step_probe_cost_ms"]
+
             else:
-                # Baselines probe every path.
                 path_metrics_list: List[Dict] = []
+                n_probes_step = 0
                 for path_idx in range(len(paths)):
                     if method_name in ("widest_path", "ecmp"):
                         m = env.probe_path_full(path_idx)
@@ -370,7 +262,8 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
                     else:
                         m = env.probe_path_latency(path_idx)
                         method_results["latency_probes"] += 1
-                    method_results["total_probe_time_ms"] += env.last_probe_cost_ms
+                    step_probe_cost += env.last_probe_cost_ms
+                    n_probes_step += 1
                     path_metrics_list.append(m)
 
                 flow_stub = {"src": int(pair[0]), "dst": int(pair[1])}
@@ -379,37 +272,21 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
                     action = int(np.random.choice(len(paths)))
                 else:
                     action = int(
-                        method.select_path(
-                            paths, path_metrics_list, flow_stub, state_stub
-                        )
+                        method.select_path(paths, path_metrics_list, flow_stub, state_stub)
                     )
-                if 0 <= action < len(paths):
-                    path_metrics = path_metrics_list[action]
+                _, reward, _, info = env.step(
+                    action,
+                    step_probe_cost_ms=step_probe_cost,
+                    num_probes_in_step=n_probes_step,
+                )
+                method_results["total_probe_time_ms"] += step_probe_cost
 
-            selection_time_ms = (time.time() - start_time) * 1000.0
-            method_results["selection_times_ms"].append(selection_time_ms)
-
-            # Do not use the probe's path_metrics for the final reward! 
-            # Step the environment to get the actual properties of the chosen path.
-            _, _, _, info = env.step(action)
-            actual_metrics = info["path_metrics"]
-
-            latency = float(actual_metrics.get("latency_ms", 50.0))
-            bw_val = actual_metrics.get("bandwidth_mbps")
-            bandwidth = float(bw_val) if bw_val is not None else 0.0
-            loss_rate = float(actual_metrics.get("loss_rate", 0.0))
-
-            method_results["rewards"].append(_compute_reward(actual_metrics, env))
-            method_results["latencies"].append(latency)
-            method_results["bandwidths"].append(bandwidth)
-            method_results["losses"].append(loss_rate)
+            _record_step(method_results, info, reward, (time.time() - t0) * 1000.0)
             pbar.update(1)
     pbar.close()
 
 
-# -----------------------------------------------------------------------------
-# Summary
-# -----------------------------------------------------------------------------
+# --- Summary -------------------------------------------------------------------
 
 print("\n" + "=" * 60)
 print("EVALUATION RESULTS")
@@ -445,21 +322,16 @@ for method_name, method_results in results.items():
         "avg_selection_time_ms": float(np.mean(selection_times)),
         "n_selections": int(n_selections),
     }
-
     s = summary[method_name]
     print(
         f"\n{method_name.upper()}:"
         f"\n  Reward: {s['reward_mean']:.3f} ± {s['reward_std']:.3f}"
         f"\n  Latency (ms): {s['latency_mean']:.1f} (p95: {s['latency_p95']:.1f})"
         f"\n  Bandwidth (Mbps): {s['bandwidth_mean']:.1f}"
-        f"\n  Total probes: {s['total_probes']} "
-        f"({s['latency_probes']} latency, {s['bandwidth_probes']} bandwidth)"
+        f"\n  Total probes: {s['total_probes']}"
         f"\n  Avg probe overhead per selection: {s['avg_probe_time_per_selection']:.1f} ms"
-        f"\n  Avg selection time: {s['avg_selection_time_ms']:.3f} ms"
     )
 
-
-# Probe reduction vs. baseline mean (DQN highlight).
 probe_reduction = 0.0
 time_reduction = 0.0
 if "dqn" in summary:
@@ -468,14 +340,11 @@ if "dqn" in summary:
     )
     if baseline_avg_probes:
         probe_reduction = (
-            (baseline_avg_probes - summary["dqn"]["total_probes"])
-            / baseline_avg_probes
-            * 100.0
+            (baseline_avg_probes - summary["dqn"]["total_probes"]) / baseline_avg_probes * 100.0
         )
     baseline_avg_time = float(
         np.mean(
-            [s["total_probe_time_ms"] for k, s in summary.items() if k != "dqn"]
-            or [0.0]
+            [s["total_probe_time_ms"] for k, s in summary.items() if k != "dqn"] or [0.0]
         )
     )
     if baseline_avg_time:
@@ -484,12 +353,10 @@ if "dqn" in summary:
             / baseline_avg_time
             * 100.0
         )
-
     print("\n" + "=" * 60)
     print("DQN PROBE REDUCTION vs. baseline mean:")
     print(f"  Probe count reduction:  {probe_reduction:.1f}%")
     print(f"  Probe time reduction:   {time_reduction:.1f}%")
-
 
 with open(run_path / "evaluation_results.json", "w") as f:
     json.dump(
@@ -498,9 +365,10 @@ with open(run_path / "evaluation_results.json", "w") as f:
             "num_eval_pairs": len(EVAL_PAIRS),
             "num_eval_hours": len(EVAL_HOURS),
             "num_eval_selections": int(len(EVAL_HOURS) * len(EVAL_PAIRS)),
-            "num_paths_action_dim": _action_dim,
+            "num_paths_action_dim": action_dim,
             "probe_reduction_percent": probe_reduction,
             "time_reduction_percent": time_reduction,
+            "reward_weights": reward_weights.to_dict(),
         },
         f,
         indent=2,

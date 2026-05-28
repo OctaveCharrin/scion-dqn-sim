@@ -13,7 +13,9 @@ from src.rl.dqn_agent_scoring_enhanced import (
 
 torch = pytest.importorskip("torch")
 
-G, P = 5, 6
+from src.simulation.evaluation_env import SCORING_GLOBAL_DIM, PATH_FEATURE_DIM
+
+G, P = SCORING_GLOBAL_DIM, PATH_FEATURE_DIM
 
 
 @pytest.fixture

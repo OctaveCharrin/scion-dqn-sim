@@ -1,5 +1,10 @@
 """
-Enhanced reward calculation that accounts for probing costs
+Legacy Gym-environment reward calculator (probing-aware).
+
+The evaluation pipeline (steps 04–05) uses
+:class:`~src.simulation.evaluation_env.EvaluationPathSelectionEnv` and
+:meth:`~src.simulation.evaluation_env.EvaluationPathSelectionEnv.compute_reward`
+instead. This module remains for ``src.rl.environment_*`` Gym flows.
 """
 
 import numpy as np

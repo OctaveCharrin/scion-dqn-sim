@@ -21,15 +21,14 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 # -----------------------------------------------------------------------------
-# Topology artifact layout (under each ``run_*`` directory)
+# Topology / run artifacts (implementation in src.simulation.run_context)
 # -----------------------------------------------------------------------------
 
-TOPOLOGY_SUBDIR_NAME = "topology"
-
-
-def topology_dir(run_dir: str | Path) -> Path:
-    """Return ``<run_dir>/topology`` where BRITE/SCION artifacts and step plots live."""
-    return Path(run_dir) / TOPOLOGY_SUBDIR_NAME
+from src.simulation.run_context import (  # noqa: E402
+    TOPOLOGY_SUBDIR_NAME,
+    topology_dir,
+    validate_pre_training_artifacts,
+)
 
 
 # -----------------------------------------------------------------------------
@@ -124,36 +123,6 @@ def resolve_existing_run_dir(
             "Pass --run-dir PATH to an existing run with steps 01–03 complete."
         )
     return dirs[-1]
-
-
-def validate_pre_training_artifacts(run_dir: str | Path) -> None:
-    """Ensure topology, beaconing, and traffic outputs exist before step 04."""
-    root = Path(run_dir)
-    if not root.is_dir():
-        raise FileNotFoundError(f"Run directory not found: {root}")
-
-    topo = topology_dir(root) / "scion_topology.json"
-    if not topo.is_file():
-        legacy = root / "scion_topology.json"
-        if not legacy.is_file():
-            raise FileNotFoundError(
-                f"Missing topology JSON in {root / TOPOLOGY_SUBDIR_NAME} "
-                f"or {legacy}. Run 01_generate_topology.py first."
-            )
-
-    required = [
-        root / "path_store.json",
-        root / "selected_pair.json",
-        root / "traffic_flows.pkl",
-        root / "link_states.pkl",
-    ]
-    missing = [str(p.relative_to(root)) for p in required if not p.is_file()]
-    if missing:
-        raise FileNotFoundError(
-            "Run directory is missing artifacts from steps 02–03:\n  "
-            + "\n  ".join(missing)
-            + "\nRun 02_run_beaconing.py and 03_simulate_traffic.py first."
-        )
 
 
 def run_script(

@@ -1,38 +1,30 @@
-# DQN-based Path Selection Evaluation
+# DQN Path Selection Evaluation
 
-This directory contains the complete evaluation pipeline for comparing DQN-based path selection with traditional methods in SCION networks.
+Numbered pipeline scripts (`01`–`06`) plus shared modules:
 
-## Overview
+| Module | Role |
+|--------|------|
+| `path_selection.py` | Thin re-exports from `src.simulation` / `src.rl` |
+| `train_lib.py` | Thin re-export of `src.rl.path_selection_train` |
+| `src/simulation/evaluation_env.py` | Unified env: probe, observe, reward, step |
+| `src/simulation/run_context.py` | Load run dirs, `make_env()` |
+| `src/rl/path_selection_train.py` | `train_flat_dqn`, `train_scoring_dqn` |
 
-The evaluation follows the approach described in `simple_dqn.tex`:
-- Creates a dense SCION topology
-- Runs beaconing to discover paths
-- Simulates 28 days of traffic with diurnal patterns
-- Trains DQN agent on first 14 days
-- Evaluates all methods on last 14 days
-- Generates figures
-
-## Key Features
-
-1. **Selective Probing**: DQN only probes selected paths while baseline methods must probe all paths
-2. **Differentiated Costs**: Latency probes (10ms) vs bandwidth probes (100ms)
-3. **Realistic Traffic**: Diurnal and weekly patterns
-4. **Fair Comparison**: All methods evaluated on same traffic flows
-
-## Running the Evaluation
+## Run pipeline
 
 ```bash
-# Run complete pipeline
-python run_full_evaluation.py
-or
-python run_full_evaluation_2.py
+cd evaluation
+uv run python run_full_evaluation.py
 
-# Or run individual steps with specific run directory
-mkdir -p run_YYYYMMDD_HHMMSS
-python 01_generate_topology.py run_YYYYMMDD_HHMMSS
-python 02_run_beaconing.py run_YYYYMMDD_HHMMSS
-python 03_simulate_traffic.py run_YYYYMMDD_HHMMSS
-python 04_train_dqn.py run_YYYYMMDD_HHMMSS
-python 05_evaluate_methods.py run_YYYYMMDD_HHMMSS
-python 06_generate_figures.py run_YYYYMMDD_HHMMSS
+# Reuse topology + traffic from an existing run:
+uv run python run_full_evaluation.py --from-step 4 --run-dir run_YYYYMMDD_HHMMSS
 ```
+
+## Observations
+
+- **Flat DQN** (`04_train_dqn.py`, `04_train_simple_dqn.py`): `env.observe_flat()` → 5-D vector
+- **Path-scoring DQN** (`04_train_scoring_*.py`): `env.observe_scoring()` → `{global: 7-D with pair embed, paths: 7-D with relative bw}`
+
+Probe penalty is normalized per probe (`num_probes_in_step`) so baselines that probe all paths are not over-penalized vs selective RL.
+
+Reward and goodput normalization are computed inside `env.step()` / `env.apply_action()` so training and evaluation stay aligned.

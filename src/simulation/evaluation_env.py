@@ -1,34 +1,82 @@
 """
-Path-selection environment used by ``evaluation/04_train_dqn.py`` and
-``05_evaluate_methods.py``.
+Unified path-selection environment for the evaluation pipeline (steps 04–05).
 
-The environment now exposes:
-
-* **Selective probing** with separate per-call probe-time accounting.
-  ``probe_path_latency`` and ``probe_path_full`` return the *actual* measured
-  metric (latency in ms, bottleneck bandwidth in Mbps), and the wall-clock
-  cost of issuing the probe is tracked in ``last_probe_cost_ms`` and the
-  cumulative ``total_probe_cost_ms``. This used to be conflated by adding
-  the probe cost into the returned latency, biasing every reading upward
-  by ~10 ms.
-* **Stateful episodes** keyed on ``(src, dst, hour_idx)``. ``reset`` may
-  pick a fresh AS pair from the path store and select an initial hour; the
-  default ``step`` advances ``hour_idx`` by one within an episode of
-  configurable length so γ in the DQN bootstrap actually has work to do.
-* **Action masks** that mirror ``len(available_paths) <= action_dim``.
+Provides selective probing, per-pair link states, built-in reward computation,
+and consistent observations for flat DQN (5-D aggregate) and path-scoring DQN
+(per-path feature matrix).
 """
 
 from __future__ import annotations
 
 import random
+from dataclasses import asdict, dataclass
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
+# Flat DQN: time + aggregate link context only.
+FLAT_GLOBAL_DIM = 5
+GLOBAL_DIM = FLAT_GLOBAL_DIM  # backward-compatible alias
+
+# Path-scoring DQN: flat context + normalized (src, dst) pair embedding.
+PAIR_EMBED_DIM = 2
+SCORING_GLOBAL_DIM = FLAT_GLOBAL_DIM + PAIR_EMBED_DIM
+
+# Per path: latency, loss, hops, relative bandwidth, utilization, static bw, trust.
+PATH_FEATURE_DIM = 7
+
+PROBE_PENALTY_REF_MS = 500.0
+
+ObservationMode = Literal["flat", "scoring"]
+
+
+@dataclass
+class RewardWeights:
+    """Composite goodput + trust reward weights (see ``compute_reward``)."""
+
+    w1: float = 0.7
+    w2: float = 0.3
+    w3: float = 0.5
+    w4: float = 0.5
+    w_probe: float = 0.05
+
+    def to_dict(self) -> Dict[str, float]:
+        return asdict(self)
+
+    @classmethod
+    def from_mapping(cls, data: Optional[Mapping[str, Any]] = None) -> "RewardWeights":
+        base = cls()
+        if not data:
+            return base
+        for key in ("w1", "w2", "w3", "w4", "w_probe"):
+            if key in data:
+                setattr(base, key, float(data[key]))
+        return base
+
+
+DEFAULT_REWARD_WEIGHTS = RewardWeights().to_dict()
+
+
+def reward_from_path_metrics(
+    path_metrics: Mapping[str, Any],
+    env: "EvaluationPathSelectionEnv",
+    *,
+    weights: Optional[Mapping[str, float]] = None,
+    max_possible_bw: Optional[float] = None,
+    probe_cost_ms: float = 0.0,
+) -> float:
+    """Backward-compatible wrapper around ``EvaluationPathSelectionEnv.compute_reward``."""
+    return env.compute_reward(
+        path_metrics,
+        max_possible_bw=max_possible_bw,
+        probe_cost_ms=probe_cost_ms,
+        num_probes_in_step=1,
+        weights=weights,
+    )
+
 
 def _wrap_path(path_dict: Dict[str, Any]) -> SimpleNamespace:
-    """Attach ``as_sequence`` for baseline selectors that expect path objects."""
     hops = path_dict.get("hops") or []
     seq = tuple(int(h["as"]) for h in hops if isinstance(h, dict) and "as" in h)
     ns = SimpleNamespace()
@@ -39,7 +87,6 @@ def _wrap_path(path_dict: Dict[str, Any]) -> SimpleNamespace:
 
 
 def _path_to_link_keys(path: Any) -> List[Tuple[int, int]]:
-    """Return canonical ``(min, max)`` link keys for every consecutive hop."""
     hops = getattr(path, "hops", None)
     if hops is None and isinstance(path, dict):
         hops = path.get("hops") or []
@@ -52,11 +99,7 @@ def _path_to_link_keys(path: Any) -> List[Tuple[int, int]]:
 
 
 class EvaluationPathSelectionEnv:
-    """Path-selection environment with selective probing and stateful episodes.
-
-    ``available_paths`` entries are ``SimpleNamespace`` views with ``hops``,
-    ``static_metrics``, and ``as_sequence``.
-    """
+    """Path-selection environment with probing, observations, and reward in one place."""
 
     def __init__(
         self,
@@ -71,6 +114,9 @@ class EvaluationPathSelectionEnv:
         pair_pool: Optional[Sequence[Tuple[int, int]]] = None,
         episode_length: int = 24,
         rng_seed: Optional[int] = None,
+        reward_weights: Optional[Union[RewardWeights, Mapping[str, float]]] = None,
+        normalize_probe_penalty: bool = True,
+        max_as: Optional[int] = None,
     ) -> None:
         self.topology_data = topology_data
         self.path_store = path_store
@@ -86,7 +132,14 @@ class EvaluationPathSelectionEnv:
         self.episode_length = max(1, int(episode_length))
         self._rng = random.Random(rng_seed)
 
-        # Episode state.
+        if isinstance(reward_weights, RewardWeights):
+            self.reward_weights = reward_weights
+        else:
+            self.reward_weights = RewardWeights.from_mapping(reward_weights)
+
+        self.normalize_probe_penalty = bool(normalize_probe_penalty)
+        self._max_as = int(max_as) if max_as is not None else None
+
         self.current_link_states: Dict[str, Any] = {}
         self.available_paths: List[Any] = []
         self.probed_path_metrics: Dict[int, Dict[str, Any]] = {}
@@ -110,10 +163,169 @@ class EvaluationPathSelectionEnv:
             sm = {}
         return dict(sm)
 
-    def _path_link_keys(self, path_idx: int) -> List[Tuple[int, int]]:
-        if path_idx >= len(self.available_paths):
-            return []
-        return _path_to_link_keys(self.available_paths[path_idx])
+    def _path_metrics_at(self, path_index: int) -> Dict[str, Any]:
+        if path_index >= len(self.available_paths):
+            return {
+                "latency_ms": float("inf"),
+                "bandwidth_mbps": 0.0,
+                "loss_rate": 1.0,
+                "hop_count": 0,
+                "utilization": 1.0,
+            }
+        st = self.current_link_states.get(f"path_{path_index}", {}) or {}
+        sm = self._static_metrics(path_index)
+        return {
+            "latency_ms": float(st.get("latency_ms", sm.get("total_latency", 50.0))),
+            "bandwidth_mbps": float(
+                st.get("available_bandwidth_mbps", sm.get("min_bandwidth", 1000.0))
+            ),
+            "loss_rate": float(st.get("loss_rate", 0.0)),
+            "hop_count": int(sm.get("hop_count", 1)),
+            "utilization": float(st.get("utilization", 0.0)),
+        }
+
+    def _max_path_bandwidth_at_current_hour(self) -> float:
+        max_bw = 0.0
+        for path_index in range(len(self.available_paths)):
+            bw = float(self._path_metrics_at(path_index).get("bandwidth_mbps") or 0.0)
+            max_bw = max(max_bw, bw)
+        return max_bw
+
+    def _max_as_number(self) -> int:
+        if self._max_as is not None and self._max_as > 0:
+            return self._max_as
+        candidates: List[int] = []
+        nodes = self.topology_data.get("nodes") or self.topology_data.get("ases") or []
+        for node in nodes:
+            if isinstance(node, dict):
+                for key in ("as_id", "id", "as"):
+                    if key in node:
+                        candidates.append(int(node[key]))
+                        break
+            elif isinstance(node, (int, float)):
+                candidates.append(int(node))
+        for pair in self.pair_pool:
+            candidates.extend((int(pair[0]), int(pair[1])))
+        src = self.current_flow.get("src")
+        dst = self.current_flow.get("dst")
+        if src is not None:
+            candidates.append(int(src))
+        if dst is not None:
+            candidates.append(int(dst))
+        return max(candidates) if candidates else 50
+
+    def _effective_probe_cost_ms(
+        self, step_probe_cost_ms: float, num_probes_in_step: int
+    ) -> float:
+        """Per-probe average when normalizing so full-probe baselines are not over-penalized."""
+        if self.normalize_probe_penalty:
+            return float(step_probe_cost_ms) / max(1, int(num_probes_in_step))
+        return float(step_probe_cost_ms)
+
+    # ---------------------------------------------------------------- reward
+    def compute_reward(
+        self,
+        path_metrics: Mapping[str, Any],
+        *,
+        max_possible_bw: Optional[float] = None,
+        probe_cost_ms: float = 0.0,
+        num_probes_in_step: int = 1,
+        weights: Optional[Mapping[str, float]] = None,
+    ) -> float:
+        """Composite goodput + trust reward in ``[-1, 1]``."""
+        w = RewardWeights.from_mapping(weights) if weights else self.reward_weights
+        bw = float(path_metrics.get("bandwidth_mbps") or 0.0)
+
+        if max_possible_bw is None:
+            max_possible_bw = self._max_path_bandwidth_at_current_hour()
+
+        if max_possible_bw <= 0.001:
+            goodput = 1.0
+        else:
+            goodput = max(0.0, min(bw / max_possible_bw, 1.0))
+
+        loss = float(path_metrics.get("loss_rate", 0.0))
+        delay = min(100.0, float(path_metrics.get("latency_ms", 50.0))) / 100.0
+        trust = max(0.0, min(1.0, 1.0 - (w.w3 * loss + w.w4 * delay)))
+        base_reward = float(2.0 * (w.w1 * goodput + w.w2 * trust) - 1.0)
+        cost = self._effective_probe_cost_ms(probe_cost_ms, num_probes_in_step)
+        probe_penalty = min(1.0, cost / PROBE_PENALTY_REF_MS)
+        reward = base_reward - (w.w_probe * probe_penalty)
+        return max(-1.0, min(1.0, float(reward)))
+
+    # ----------------------------------------------------------- observations
+    def observe_flat(self, hour_idx: Optional[int] = None) -> np.ndarray:
+        """5-D aggregate context: time, mean utilization, mean trust, congestion fraction."""
+        hour_idx = self.hour_idx if hour_idx is None else int(hour_idx)
+        day = (hour_idx // 24) % 7
+        hour = hour_idx % 24
+        f0 = day / 6.0
+        f1 = hour / 23.0
+        w = self.reward_weights
+        states = list(self.current_link_states.values())
+        if not states:
+            return np.array([f0, f1, 0.0, 0.0, 0.0], dtype=np.float32)
+        utils = [float(s.get("utilization", 0.0)) for s in states]
+        losses = [float(s.get("loss_rate", 0.0)) for s in states]
+        lats = [min(100.0, float(s.get("latency_ms", 50.0))) / 100.0 for s in states]
+        trusts = [
+            max(0.0, min(1.0, 1.0 - (w.w3 * loss + w.w4 * lat)))
+            for loss, lat in zip(losses, lats)
+        ]
+        f2 = float(np.mean(utils)) if utils else 0.0
+        f3 = float(np.mean(trusts)) if trusts else 0.0
+        f4 = float(np.mean([1.0 if u > 0.7 else 0.0 for u in utils])) if utils else 0.0
+        return np.array([f0, f1, f2, f3, f4], dtype=np.float32)
+
+    def observe_scoring_global(self, hour_idx: Optional[int] = None) -> np.ndarray:
+        """Scoring global vector: aggregate context + normalized source/destination AS."""
+        base = self.observe_flat(hour_idx)
+        max_as = float(self._max_as_number())
+        src = float(self.current_flow.get("src", 0))
+        dst = float(self.current_flow.get("dst", 0))
+        pair_embed = np.array([src / max_as, dst / max_as], dtype=np.float32)
+        return np.concatenate([base, pair_embed]).astype(np.float32)
+
+    def observe_scoring(self) -> Dict[str, np.ndarray]:
+        """Dict state for path-scoring DQNs: ``global`` (SCORING_GLOBAL_DIM,) and ``paths`` (N, 7)."""
+        n = len(self.available_paths)
+        if n == 0:
+            return {
+                "global": self.observe_scoring_global(),
+                "paths": np.zeros((0, PATH_FEATURE_DIM), dtype=np.float32),
+            }
+
+        w = self.reward_weights
+        raw_bws: List[float] = []
+        for path_idx in range(n):
+            st = self.current_link_states.get(f"path_{path_idx}", {}) or {}
+            sm = self._static_metrics(path_idx)
+            raw_bws.append(
+                float(st.get("available_bandwidth_mbps", sm.get("min_bandwidth", 1000.0)))
+            )
+        max_bw = max(raw_bws) if raw_bws else 1.0
+        if max_bw <= 0.001:
+            max_bw = 1.0
+
+        rows = np.zeros((n, PATH_FEATURE_DIM), dtype=np.float32)
+        for path_idx in range(n):
+            sm = self._static_metrics(path_idx)
+            st = self.current_link_states.get(f"path_{path_idx}", {}) or {}
+            lat_ms = float(st.get("latency_ms", sm.get("total_latency", 50.0)))
+            lat = lat_ms / 100.0
+            loss = float(st.get("loss_rate", 0.0))
+            hop = float(sm.get("hop_count", 1)) / 20.0
+            bw_ratio = raw_bws[path_idx] / max_bw
+            util = float(st.get("utilization", 0.0))
+            static_bw = float(sm.get("min_bandwidth", 0.0)) / 10000.0
+            trust = max(0.0, min(1.0, 1.0 - (w.w3 * loss + w.w4 * min(100.0, lat_ms) / 100.0)))
+            rows[path_idx] = (lat, loss, hop, bw_ratio, util, static_bw, trust)
+        return {"global": self.observe_scoring_global(), "paths": rows}
+
+    def observe(self, mode: ObservationMode = "flat") -> Union[np.ndarray, Dict[str, np.ndarray]]:
+        if mode == "scoring":
+            return self.observe_scoring()
+        return self.observe_flat()
 
     # ---------------------------------------------------------------- episode
     def reset(
@@ -123,11 +335,6 @@ class EvaluationPathSelectionEnv:
         *,
         hour_idx: Optional[int] = None,
     ) -> np.ndarray:
-        """Start a new episode.
-
-        If ``source_as`` / ``dest_as`` are omitted and a non-empty ``pair_pool``
-        was provided, a random pair from the pool is chosen.
-        """
         if source_as is None or dest_as is None:
             if not self.pair_pool:
                 raise ValueError(
@@ -156,20 +363,9 @@ class EvaluationPathSelectionEnv:
         self.hour_idx = int(hour_idx)
         self.episode_start_hour = int(hour_idx)
         self._refresh_link_states()
-
-        return np.zeros(5, dtype=np.float32)
+        return self.observe_flat()
 
     def _refresh_link_states(self) -> None:
-        """Resolve hourly link states for the current ``(src, dst)`` pair.
-
-        Supports two storage layouts:
-
-        * **Multi-pair** (preferred):
-          ``link_states[hour]["by_pair"]["pair_<src>_<dst>"]["path_<idx>"]``
-        * **Legacy single-pair**:
-          ``link_states[hour]["path_<idx>"]`` — used only when ``by_pair`` is
-          absent or doesn't include the current pair.
-        """
         hour = self.link_states.get(self.hour_idx, {}) or {}
         src = self.current_flow.get("src")
         dst = self.current_flow.get("dst")
@@ -180,8 +376,6 @@ class EvaluationPathSelectionEnv:
         if block:
             self.current_link_states = dict(block)
         else:
-            # Strip the multi-pair sub-table to keep ``path_<idx>`` keys at the
-            # top level for legacy callers that pre-set ``current_link_states``.
             cleaned = {
                 k: v for k, v in hour.items() if isinstance(k, str) and k.startswith("path_")
             }
@@ -189,10 +383,6 @@ class EvaluationPathSelectionEnv:
 
     # ------------------------------------------------------------------ probe
     def probe_path_latency(self, path_index: int) -> Dict[str, Any]:
-        """Probe a path for latency. ``last_probe_cost_ms`` is updated; the
-        returned ``latency_ms`` is the *measured path latency* and does NOT
-        include the probe overhead (selection time accounting is separate).
-        """
         if path_index >= len(self.available_paths):
             self.last_probe_cost_ms = self.latency_probe_cost_ms
             self.total_probe_cost_ms += self.last_probe_cost_ms
@@ -226,7 +416,6 @@ class EvaluationPathSelectionEnv:
         }
 
     def probe_path_full(self, path_index: int) -> Dict[str, Any]:
-        """Probe a path for both latency and bandwidth."""
         if path_index >= len(self.available_paths):
             self.last_probe_cost_ms = self.bandwidth_probe_cost_ms
             self.total_probe_cost_ms += self.last_probe_cost_ms
@@ -247,10 +436,7 @@ class EvaluationPathSelectionEnv:
         )
         loss = float(st.get("loss_rate", 0.0))
         hop = int(sm.get("hop_count", 1))
-        cost = (
-            self.bandwidth_probe_cost_ms
-            + self.per_hop_full_probe_cost_ms * hop
-        )
+        cost = self.bandwidth_probe_cost_ms + self.per_hop_full_probe_cost_ms * hop
 
         self.num_latency_probes += 1
         self.num_bandwidth_probes += 1
@@ -269,42 +455,33 @@ class EvaluationPathSelectionEnv:
         return out
 
     # ------------------------------------------------------------------ step
-    def step(self, action: int) -> tuple:
-        """Apply ``action``, advance to the next hour, return (obs, r, done, info).
+    def step(
+        self,
+        action: int,
+        *,
+        step_probe_cost_ms: float = 0.0,
+        num_probes_in_step: int = 1,
+    ) -> Tuple[np.ndarray, float, bool, Dict[str, Any]]:
+        """Apply ``action`` at the current hour, compute reward, then advance time.
 
-        Reward is left at 0.0 — training scripts compute it from the path
-        metrics info dict to keep the reward weights configurable. The
-        observation is a 5-vector zero placeholder; training scripts replace
-        it with their own state featurization.
+        ``max_available_path_bw`` and ``path_metrics`` are taken at the selection
+        hour (before ``hour_idx`` advances). Pass ``num_probes_in_step`` so probe
+        penalty is comparable between single-probe RL and multi-probe baselines.
         """
         self.current_step += 1
-        path_metrics: Dict[str, Any]
-        if action < len(self.available_paths):
-            st = self.current_link_states.get(f"path_{action}", {}) or {}
-            sm = self._static_metrics(action)
-            path_metrics = {
-                "latency_ms": float(
-                    st.get("latency_ms", sm.get("total_latency", 50.0))
-                ),
-                "bandwidth_mbps": float(
-                    st.get(
-                        "available_bandwidth_mbps", sm.get("min_bandwidth", 1000.0)
-                    )
-                ),
-                "loss_rate": float(st.get("loss_rate", 0.0)),
-                "hop_count": int(sm.get("hop_count", 1)),
-                "utilization": float(st.get("utilization", 0.0)),
-            }
-        else:
-            path_metrics = {
-                "latency_ms": float("inf"),
-                "bandwidth_mbps": 0.0,
-                "loss_rate": 1.0,
-                "hop_count": 0,
-                "utilization": 1.0,
-            }
+        selection_hour = self.hour_idx
+        path_metrics = self._path_metrics_at(action)
+        max_available_path_bw = self._max_path_bandwidth_at_current_hour()
+        effective_probe_cost = self._effective_probe_cost_ms(
+            step_probe_cost_ms, num_probes_in_step
+        )
+        reward = self.compute_reward(
+            path_metrics,
+            max_possible_bw=max_available_path_bw,
+            probe_cost_ms=step_probe_cost_ms,
+            num_probes_in_step=num_probes_in_step,
+        )
 
-        # Advance to the next hour and roll over within the episode.
         keys = sorted(self.link_states.keys()) if self.link_states else []
         if keys:
             self.hour_idx = (self.hour_idx + 1) % (max(keys) + 1)
@@ -313,43 +490,47 @@ class EvaluationPathSelectionEnv:
         done = self.current_step >= self.episode_length
         info = {
             "path_metrics": path_metrics,
+            "max_available_path_bw": max_available_path_bw,
+            "reward": reward,
+            "selection_hour_idx": selection_hour,
             "probe_count": self.num_latency_probes + self.num_bandwidth_probes,
             "probe_cost_ms": self.total_probe_cost_ms,
+            "step_probe_cost_ms": float(step_probe_cost_ms),
+            "effective_probe_cost_ms": float(effective_probe_cost),
+            "num_probes_in_step": int(num_probes_in_step),
             "hour_idx": self.hour_idx,
+            "action": int(action),
         }
+        return self.observe_flat(), reward, done, info
 
-        max_available_path_bw = 1.0
+    def apply_action(
+        self,
+        action: int,
+        *,
+        probe: Literal["none", "latency", "full"] = "full",
+    ) -> Tuple[float, bool, Dict[str, Any]]:
+        """Optionally probe the chosen path, then ``step`` with matching probe cost."""
+        step_probe_cost = 0.0
+        num_probes = 0
+        if probe == "full":
+            self.probe_path_full(action)
+            step_probe_cost = self.last_probe_cost_ms
+            num_probes = 1
+        elif probe == "latency":
+            self.probe_path_latency(action)
+            step_probe_cost = self.last_probe_cost_ms
+            num_probes = 1
+        _, reward, done, info = self.step(
+            action,
+            step_probe_cost_ms=step_probe_cost,
+            num_probes_in_step=max(1, num_probes),
+        )
+        return reward, done, info
 
-        # --- NEW: State-Restoring Oracle ---
-        # Save the current probe accounting so we don't penalize the agent 
-        # for our behind-the-scenes bottleneck calculations.
-        saved_bw_probes = self.num_bandwidth_probes
-        saved_lat_probes = self.num_latency_probes
-        saved_cost = self.total_probe_cost_ms
-
-        # Calculate the actual ground-truth bottleneck for every path
-        for path_index in range(self.num_paths()):
-            # Use the official probe function to get the exact math
-            true_metrics = self.probe_path_full(path_index)
-            path_bw = float(true_metrics.get("bandwidth_mbps", 0.0))
-            max_available_path_bw = max(max_available_path_bw, path_bw)
-
-        # Rewind the probe accounting back to what it was
-        self.num_bandwidth_probes = saved_bw_probes
-        self.num_latency_probes = saved_lat_probes
-        self.total_probe_cost_ms = saved_cost
-        # -----------------------------------
-
-        info["max_available_path_bw"] = max_available_path_bw
-
-        return np.zeros(5, dtype=np.float32), 0.0, done, info
-
-    # ----------------------------------------------------------- introspection
     def num_paths(self) -> int:
         return len(self.available_paths)
 
     def action_mask(self, action_dim: int) -> np.ndarray:
-        """Boolean mask for valid actions given the current pair's path count."""
         n = len(self.available_paths)
         mask = np.zeros(int(action_dim), dtype=bool)
         mask[: min(n, int(action_dim))] = True
