@@ -66,7 +66,7 @@ cd evaluation
 uv run python run_full_evaluation.py --run-dir run_20260101_120000
 ```
 
-The orchestrator and numbered scripts share helpers in **`evaluation/_common.py`** (run-directory resolution, subprocess runner, figure styling metadata for step 06).
+Pipeline orchestration lives in **`src/pipeline/`** (run-directory resolution, subprocess runner, figure styling for step 06). Numbered scripts in **`evaluation/`** are thin CLIs that import from **`src`**.
 
 **Steps executed:**
 
@@ -115,19 +115,17 @@ uv run python 06_generate_figures.py run_YYYYMMDD_HHMMSS
 
 ### Topology maps (optional)
 
-After a run has `topology/scion_topology.json` (or `topology/scion_topology.pkl`), generate **topology figures** with **`evaluation/visualize_topology.py`**:
+After a run has `topology/scion_topology.json` (or `topology/scion_topology.pkl`), generate **topology figures** with **`src.visualization.topology_cli`**:
 
 ```bash
-cd evaluation
-
 # Full dashboard: main geographic map + degree / ISD / link-type panels, plus extra PNGs
-uv run python visualize_topology.py run_YYYYMMDD_HHMMSS --mode full --report
+uv run python -m src.visualization.topology_cli run_YYYYMMDD_HHMMSS --mode full --report
 
 # Single geographic map with AS-role and link-type legends
-uv run python visualize_topology.py --mode simple
+uv run python -m src.visualization.topology_cli --mode simple
 
 # Explicit JSON path and output directory
-uv run python visualize_topology.py -t run_YYYYMMDD_HHMMSS/topology/scion_topology.json -o ./figures --mode full
+uv run python -m src.visualization.topology_cli -t run_YYYYMMDD_HHMMSS/topology/scion_topology.json -o ./figures --mode full
 ```
 
 - **`--mode full`** (default): writes **`topology_dashboard.png`**, and unless **`--no-extras`** is set, also **`isd_map.png`**, **`core_network.png`**, **`connectivity_matrix.png`** in the same folder as the dashboard.

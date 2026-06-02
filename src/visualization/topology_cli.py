@@ -1,33 +1,12 @@
-#!/usr/bin/env python3
-"""
-Plot topology from an evaluation run (``scion_topology.json`` or pickle).
-Works for BRITE-generated topologies.
-
-Modes
------
-**full** — dashboard: large geographic map + degree histogram + ISD composition
-stacked bars + link-type pie chart; optionally extra PNGs (ISD map, core-only
-graph, connectivity matrix).
-
-**simple** — single geographic figure with AS / link legends (lighter file).
-
-Examples
---------
-  cd evaluation
-  uv run python visualize_topology.py
-  uv run python visualize_topology.py run_20260422_120000
-  uv run python visualize_topology.py --mode simple
-  uv run python visualize_topology.py -t path/to/topology/scion_topology.json -o out.png --mode full
-  uv run python visualize_topology.py --report --no-extras
-"""
+"""CLI for plotting SCION topologies from evaluation runs or standalone files."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-import _common  # noqa: F401  — prepends repo root to sys.path
-
+from src.pipeline.run_dirs import resolve_run_dir
+from src.simulation.run_context import topology_dir
 from src.visualization.topology_visualizer import (
     TopologyVisualizer,
     generate_topology_stats,
@@ -36,16 +15,19 @@ from src.visualization.topology_visualizer import (
 )
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description=__doc__,
+        description=(
+            "Plot topology from an evaluation run (scion_topology.json or pickle) "
+            "or a direct file path."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "run_dir",
         nargs="?",
         default=None,
-        help="Evaluation run directory (e.g. run_20260101_120000). Ignored if --topology is set.",
+        help="Evaluation run directory. Ignored if --topology is set.",
     )
     parser.add_argument(
         "--topology",
@@ -65,8 +47,7 @@ def main() -> None:
         "-o",
         type=Path,
         default=None,
-        help="Output path. For 'full', use a .png file path or a directory "
-        "(dashboard written as topology_dashboard.png inside).",
+        help="Output path (.png file or directory for full mode).",
     )
     parser.add_argument(
         "--no-extras",
@@ -87,27 +68,21 @@ def main() -> None:
         "--dpi",
         type=int,
         default=200,
-        help="DPI for simple mode and dashboard (default: 200; dashboard save uses this).",
+        help="DPI for simple mode and dashboard (default: 200).",
     )
     parser.add_argument(
         "--show",
         action="store_true",
         help="With --mode simple, open an interactive window after saving.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.topology is not None:
         topo_path = args.topology.resolve()
         base_dir = topo_path.parent
     else:
-        run_dir = args.run_dir
-        if not run_dir:
-            from _common import resolve_run_dir
-
-            run_dir = resolve_run_dir()
+        run_dir = args.run_dir or resolve_run_dir(must_exist=True)
         base_dir = Path(run_dir).resolve()
-        from _common import topology_dir
-
         tdir = topology_dir(base_dir)
         topo_json = tdir / "scion_topology.json"
         topo_pkl = tdir / "scion_topology.pkl"
@@ -154,7 +129,6 @@ def main() -> None:
             print(f"Wrote statistics: {stats_path}")
         return
 
-    # --- full dashboard ---
     if args.output:
         out = args.output.resolve()
         if out.suffix.lower() != ".png":
@@ -179,7 +153,10 @@ def main() -> None:
     )
     print(f"Saved full topology dashboard: {dash_path}")
     if not args.no_extras:
-        print(f"  (extras in {dash_path.parent}/: isd_map.png, core_network.png, connectivity_matrix.png)")
+        print(
+            f"  (extras in {dash_path.parent}/: "
+            "isd_map.png, core_network.png, connectivity_matrix.png)"
+        )
 
     if args.report:
         node_df, edge_df, _ = load_topology_tables(topo_path)

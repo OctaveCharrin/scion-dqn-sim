@@ -27,4 +27,4 @@ When extending code, consider the following structural divisions:
 
 ## Helpful Pointers
 - Start with `README.md` to see configuration knobs (like `EVAL_BRITE_N_NODES=45`).
-- Look at `evaluation/_common.py` for shared logic between the sequential evaluation steps.
+- Look at `src/pipeline/` for run-directory resolution and `evaluation/_bootstrap.py` for how pipeline scripts import `src`.

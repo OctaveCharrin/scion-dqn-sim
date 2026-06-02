@@ -23,7 +23,7 @@ brite:
     m: 4
     node_placement: 1
     bw_dist: 1
-    bw_min: 1000.0
+    bw_min: 10000.0
     bw_max: 10000.0
     p: 0.15
     q: 0.2

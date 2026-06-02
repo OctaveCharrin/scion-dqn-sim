@@ -22,6 +22,7 @@ from .run_context import (
     validate_pre_training_artifacts,
 )
 from . import path_builder
+from .link_traffic_sim import simulate_link_traffic
 
 __all__ = [
     "DEFAULT_REWARD_WEIGHTS",
@@ -42,4 +43,5 @@ __all__ = [
     "topology_dir",
     "validate_pre_training_artifacts",
     "path_builder",
+    "simulate_link_traffic",
 ]

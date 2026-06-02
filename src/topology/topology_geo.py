@@ -184,7 +184,6 @@ def save_topology_geography_png(
         "parent_child": "#3498db",
         "CHILD_PARENT": "#85c1e9",
         "peer": "#27ae60",
-        "peer": "#27ae60",
     }
 
     fig, ax = plt.subplots(figsize=(11, 9))

@@ -8,7 +8,6 @@ for observations, probing, and reward computation.
 from __future__ import annotations
 
 import json
-import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -16,20 +15,21 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from _common import resolve_run_dir
-from path_selection import (
-    SCORING_GLOBAL_DIM,
+from tqdm import tqdm
+
+from src.pipeline.run_dirs import resolve_run_dir
+from src.simulation.evaluation_env import (
+    CONDITIONAL_SCORING_GLOBAL_DIM,
     PATH_FEATURE_DIM,
+    SCORING_GLOBAL_DIM,
     RewardWeights,
+)
+from src.rl.dqn_agent_scoring_conditional import ConditionalPathScoringDQNAgent
+from src.simulation.run_context import (
     compute_action_dim,
     load_run_context,
     make_env,
 )
-from tqdm import tqdm
-
-_EVAL_DIR = Path(__file__).resolve().parent
-if str(_EVAL_DIR) not in sys.path:
-    sys.path.insert(0, str(_EVAL_DIR))
 
 from src.baselines.ecmp import ECMPSelector
 from src.baselines.lowest_latency import LowestLatencySelector
@@ -85,6 +85,7 @@ dqn_agent: Optional[EnhancedDQNAgent] = None
 simple_dqn_agent: Optional[SimpleDQNAgent] = None
 scoring_simple_dqn_agent: Optional[SimplePathScoringDQNAgent] = None
 scoring_enhanced_dqn_agent: Optional[EnhancedPathScoringDQNAgent] = None
+conditional_dqn_agent: Optional[ConditionalPathScoringDQNAgent] = None
 
 _model_path = run_path / "dqn_model.pth"
 if _model_path.is_file():
@@ -153,6 +154,20 @@ if _enh_ckpt:
         scoring_enhanced_dqn_agent.target_network.load_state_dict(_enh_ckpt["target_network"])
     scoring_enhanced_dqn_agent.epsilon = 0.0
 
+_cond_path = run_path / "dqn_conditional_scoring_model.pth"
+_cond_ckpt = _load_checkpoint(_cond_path)
+if _cond_ckpt:
+    _cond_cfg = _cond_ckpt.get("config") or EnhancedDQNConfig()
+    conditional_dqn_agent = ConditionalPathScoringDQNAgent(
+        global_dim=int(_cond_ckpt.get("global_dim", CONDITIONAL_SCORING_GLOBAL_DIM)),
+        path_dim=int(_cond_ckpt.get("path_dim", PATH_FEATURE_DIM)),
+        config=_cond_cfg,
+    )
+    conditional_dqn_agent.q_network.load_state_dict(_cond_ckpt["q_network"])
+    if "target_network" in _cond_ckpt:
+        conditional_dqn_agent.target_network.load_state_dict(_cond_ckpt["target_network"])
+    conditional_dqn_agent.epsilon = 0.0
+
 env.reward_weights = reward_weights
 
 baseline_methods = {
@@ -186,6 +201,8 @@ if scoring_simple_dqn_agent is not None:
     _nn_methods.append(("scoring_simple_dqn", scoring_simple_dqn_agent))
 if scoring_enhanced_dqn_agent is not None:
     _nn_methods.append(("scoring_enhanced_dqn", scoring_enhanced_dqn_agent))
+if conditional_dqn_agent is not None:
+    _nn_methods.append(("conditional_dqn", conditional_dqn_agent))
 
 
 def _record_step(method_results: Dict, info: Dict, reward: float, selection_time_ms: float) -> None:
@@ -244,6 +261,19 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
                     pbar.update(1)
                     continue
                 action = int(method.act(state_d, evaluate=True))
+                if action >= len(paths):
+                    action = 0
+                reward, _, info = env.apply_action(action, probe="full")
+                method_results["latency_probes"] += 1
+                method_results["bandwidth_probes"] += 1
+                method_results["total_probe_time_ms"] += info["step_probe_cost_ms"]
+
+            elif method_name == "conditional_dqn":
+                state_d = env.observe_scoring_conditional()
+                if state_d["paths"].shape[0] == 0:
+                    pbar.update(1)
+                    continue
+                action = int(conditional_dqn_agent.act(state_d, evaluate=True))
                 if action >= len(paths):
                     action = 0
                 reward, _, info = env.apply_action(action, probe="full")

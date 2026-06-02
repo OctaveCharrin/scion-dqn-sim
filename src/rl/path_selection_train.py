@@ -17,7 +17,9 @@ from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
 from src.rl.dqn_agent_scoring_enhanced import EnhancedPathScoringDQNAgent
 from src.rl.dqn_agent_scoring_simple import SimplePathScoringDQNAgent
 from src.rl.dqn_agent_simple import SimpleDQNAgent
+from src.rl.reward_profiles import REWARD_PROFILES
 from src.simulation.evaluation_env import (
+    CONDITIONAL_SCORING_GLOBAL_DIM,
     FLAT_GLOBAL_DIM,
     PATH_FEATURE_DIM,
     SCORING_GLOBAL_DIM,
@@ -399,4 +401,154 @@ def train_scoring_dqn(
     if stats_path:
         with open(stats_path, "w") as f:
             json.dump(stats, f, indent=2)
+    return stats
+
+
+def train_conditional_scoring_dqn(
+    run_path: Path,
+    hp: Optional[ScoringHyperparams] = None,
+    *,
+    num_episodes: Optional[int] = None,
+    episode_length: int = EPISODE_LENGTH,
+    checkpoint_path: Optional[Path] = None,
+    stats_path: Optional[Path] = None,
+    env_seed: int = 42,
+    pair_rng_seed: int = 123,
+    hour_rng_seed: int = 456,
+    weight_rng_seed: int = 789,
+    quiet: bool = False,
+) -> Dict[str, Any]:
+    """Train a path-scoring DQN with reward weights in the global state.
+
+    Each episode samples a :class:`~src.rl.reward_profiles.RewardProfile` so the
+    policy learns to optimize different composite objectives at inference time.
+    """
+    hp = hp or ScoringHyperparams.from_env()
+    topology_data, path_store, link_states, pair_pool, goodput_cap = load_run_context(
+        run_path
+    )
+    env = make_env(
+        topology_data,
+        path_store,
+        link_states,
+        pair_pool,
+        episode_length=episode_length,
+        rng_seed=env_seed,
+        reward_weights=RewardWeights(),
+    )
+
+    config = EnhancedDQNConfig(
+        learning_rate=hp.learning_rate,
+        gamma=hp.gamma,
+        epsilon_start=hp.epsilon_start,
+        epsilon_end=hp.epsilon_end,
+        epsilon_decay=hp.epsilon_decay,
+        buffer_size=hp.buffer_size,
+        min_buffer_size=hp.min_buffer_size,
+        batch_size=hp.batch_size,
+        target_update_every=hp.target_update_every,
+        hidden_dim=hp.hidden_dim,
+        n_hidden_layers=hp.n_hidden_layers,
+        use_batch_norm=False,
+        use_prioritized_replay=hp.use_prioritized_replay,
+        use_dueling_dqn=True,
+        use_double_dqn=True,
+        tau=hp.tau,
+    )
+    agent = EnhancedPathScoringDQNAgent(
+        global_dim=CONDITIONAL_SCORING_GLOBAL_DIM,
+        path_dim=PATH_FEATURE_DIM,
+        config=config,
+    )
+
+    n_episodes = num_episodes or _target_episodes(len(pair_pool), episode_length)
+    pair_rng = random.Random(pair_rng_seed)
+    hour_rng = random.Random(hour_rng_seed)
+    weight_rng = random.Random(weight_rng_seed)
+    episode_rewards: List[float] = []
+    episode_probes: List[int] = []
+    episode_weight_names: List[str] = []
+    losses: List[float] = []
+
+    profile_list = REWARD_PROFILES
+    ep_iter = range(n_episodes)
+    if not quiet:
+        ep_iter = tqdm(ep_iter, desc="train_conditional_scoring")
+
+    for _ep in ep_iter:
+        sampled = weight_rng.choice(profile_list)
+        env.reward_weights = sampled.weights
+        episode_weight_names.append(sampled.name)
+
+        pair = pair_rng.choice(pair_pool)
+        start_hour = hour_rng.choice(TRAINING_HOURS)
+        env.reset(source_as=pair[0], dest_as=pair[1], hour_idx=start_hour)
+        state = env.observe_scoring_conditional()
+        ep_reward = 0.0
+
+        for _ in range(episode_length):
+            if state["paths"].shape[0] == 0:
+                break
+            action = int(agent.act(state))
+            if action >= len(env.available_paths):
+                action = 0
+            reward, done, _info = env.apply_action(action, probe="full")
+            ep_reward += reward
+            next_state = env.observe_scoring_conditional()
+            agent.remember(state, action, reward, next_state, done)
+            loss = agent.replay()
+            if loss is not None:
+                losses.append(float(loss))
+            state = next_state
+            if done:
+                break
+
+        agent.episodes += 1
+        agent.epsilon = max(hp.epsilon_end, agent.epsilon * hp.epsilon_decay)
+        episode_rewards.append(ep_reward / max(1, episode_length))
+        episode_probes.append(int(env.num_latency_probes + env.num_bandwidth_probes))
+
+    ckpt = checkpoint_path or (run_path / "dqn_conditional_scoring_model.pth")
+    payload: Dict[str, Any] = {
+        "model_type": "conditional_scoring_dqn",
+        "q_network": agent.q_network.state_dict(),
+        "target_network": agent.target_network.state_dict(),
+        "epsilon": agent.epsilon,
+        "steps": agent.steps,
+        "episodes": agent.episodes,
+        "global_dim": CONDITIONAL_SCORING_GLOBAL_DIM,
+        "path_dim": PATH_FEATURE_DIM,
+        "scoring_global_dim": SCORING_GLOBAL_DIM,
+        "hyperparams": asdict(hp),
+        "goodput_cap_mbps": goodput_cap,
+        "training_profiles": [p.to_dict() for p in profile_list],
+        "pair_pool": [list(p) for p in pair_pool],
+        "optimizer": agent.optimizer.state_dict(),
+        "scheduler": agent.scheduler.state_dict(),
+        "beta": agent.beta,
+        "config": config,
+    }
+    torch.save(payload, ckpt)
+
+    stats = {
+        "model_type": "conditional_scoring_dqn",
+        "num_episodes": n_episodes,
+        "episode_length_hours": episode_length,
+        "episode_rewards": episode_rewards,
+        "episode_probes": episode_probes,
+        "episode_weight_profiles": episode_weight_names,
+        "losses": losses,
+        "final_epsilon": agent.epsilon,
+        "avg_reward": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
+        "avg_probes_per_episode": float(np.mean(episode_probes)) if episode_probes else 0.0,
+        "goodput_cap_mbps": goodput_cap,
+        "pair_pool_size": len(pair_pool),
+        "global_dim": CONDITIONAL_SCORING_GLOBAL_DIM,
+        "training_profiles": [p.name for p in profile_list],
+        "hyperparams": asdict(hp),
+        "checkpoint": str(ckpt),
+    }
+    out_stats = stats_path or (run_path / "dqn_conditional_training_stats.json")
+    with open(out_stats, "w") as f:
+        json.dump(stats, f, indent=2)
     return stats

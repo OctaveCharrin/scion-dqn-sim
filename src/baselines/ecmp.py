@@ -22,6 +22,11 @@ class ECMPSelector:
         min_hops = min(hop_counts)
         shortest_indices = [i for i, h in enumerate(hop_counts) if h == min_hops]
         
-        # 2. Statistically distribute the load across all tied paths
-        # This perfectly simulates ECMP flow-spreading in a macro-simulation
-        return int(np.random.choice(shortest_indices))
+        # 2. Hash the flow to a stable path among equal-cost options (5-tuple ECMP).
+        flow_key = (
+            flow.get("source_as"),
+            flow.get("destination_as"),
+            flow.get("flow_id"),
+        )
+        pick = hash(flow_key) % len(shortest_indices)
+        return shortest_indices[pick]

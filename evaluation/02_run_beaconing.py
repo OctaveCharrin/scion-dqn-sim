@@ -17,7 +17,8 @@ from pathlib import Path
 import numpy as np
 import networkx as nx
 
-from _common import resolve_run_dir, topology_dir
+from src.pipeline.run_dirs import resolve_run_dir
+from src.simulation.run_context import topology_dir
 
 from src.beacon.beacon_sim_v2 import CorrectedBeaconSimulator
 from src.simulation.path_store import InMemoryPathStore

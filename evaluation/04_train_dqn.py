@@ -3,15 +3,10 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-_EVAL_DIR = Path(__file__).resolve().parent
-if str(_EVAL_DIR) not in sys.path:
-    sys.path.insert(0, str(_EVAL_DIR))
-
-from _common import resolve_run_dir
-from train_lib import train_flat_dqn
+from src.pipeline.run_dirs import resolve_run_dir
+from src.rl.path_selection_train import train_flat_dqn
 
 
 def main() -> None:

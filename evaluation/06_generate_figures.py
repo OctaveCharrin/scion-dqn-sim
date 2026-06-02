@@ -9,14 +9,14 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 
-from _common import (
+from src.pipeline.figures import (
     COLUMN_WIDTH,
     FULL_WIDTH,
-    apply_lncs_style,
-    resolve_run_dir,
     METHOD_COLORS as method_colors,
     METHOD_DISPLAY_NAMES as method_display_names,
+    apply_lncs_style,
 )
+from src.pipeline.run_dirs import resolve_run_dir
 
 LABEL_ROTATION = 45  
 LABEL_HA = "right"   
@@ -132,7 +132,14 @@ def _per_selection(method_summary):
     return method_summary['total_probes'] / n
 
 
-_DQN_LIKE = ("dqn", "simple_dqn", "scoring_simple_dqn", "scoring_enhanced_dqn", "scoring_dqn")
+_DQN_LIKE = (
+    "dqn",
+    "simple_dqn",
+    "scoring_simple_dqn",
+    "scoring_enhanced_dqn",
+    "conditional_dqn",
+    "scoring_dqn",
+)
 
 baseline_probes = np.mean(
     [_per_selection(summary[m]) for m in summary if m not in _DQN_LIKE]
@@ -162,7 +169,14 @@ for method in methods_by_reward:
 fig3, ax = plt.subplots(figsize=(COLUMN_WIDTH, 4.0), constrained_layout=True)
 
 methods_ordered = []
-for _m in ("dqn", "simple_dqn", "scoring_simple_dqn", "scoring_enhanced_dqn", "scoring_dqn"):
+for _m in (
+    "dqn",
+    "simple_dqn",
+    "scoring_simple_dqn",
+    "scoring_enhanced_dqn",
+    "conditional_dqn",
+    "scoring_dqn",
+):
     if _m in summary:
         methods_ordered.append(_m)
 methods_ordered.extend(
@@ -204,5 +218,46 @@ ax.legend(loc="upper left", ncol=1, frameon=True, facecolor="white", framealpha=
 
 fig3.savefig(os.path.join(run_dir, "figure3_probe_breakdown.png"), dpi=300, bbox_inches="tight")
 plt.close(fig3)
+
+# ---------------------------------------------------------------------------
+# Figure 4: Multi-reward profile heatmap (conditional vs scoring DQN)
+# ---------------------------------------------------------------------------
+_multi_reward_path = os.path.join(run_dir, "multi_reward_comparison.json")
+if os.path.isfile(_multi_reward_path):
+    with open(_multi_reward_path, "r") as f:
+        multi_reward = json.load(f)
+
+    rows = multi_reward.get("results", [])
+    if rows:
+        methods_mr = multi_reward.get("methods", sorted({r["method"] for r in rows}))
+        profiles_mr = multi_reward.get("profiles", sorted({r["profile"] for r in rows}))
+        matrix = np.zeros((len(methods_mr), len(profiles_mr)))
+        for i, method in enumerate(methods_mr):
+            for j, profile in enumerate(profiles_mr):
+                match = [r for r in rows if r["method"] == method and r["profile"] == profile]
+                if match:
+                    matrix[i, j] = match[0]["reward_mean"]
+
+        fig4, ax = plt.subplots(
+            figsize=(FULL_WIDTH, max(3.5, 0.35 * len(methods_mr) + 1.5)),
+            constrained_layout=True,
+        )
+        im = ax.imshow(matrix, aspect="auto", cmap="viridis", vmin=-1.0, vmax=1.0)
+        ax.set_xticks(np.arange(len(profiles_mr)))
+        ax.set_yticks(np.arange(len(methods_mr)))
+        ax.set_xticklabels(profiles_mr, rotation=45, ha="right")
+        ax.set_yticklabels([method_display_names.get(m, m) for m in methods_mr])
+        ax.set_title("Mean Reward by Method and Profile")
+        for i in range(len(methods_mr)):
+            for j in range(len(profiles_mr)):
+                ax.text(j, i, f"{matrix[i, j]:.2f}", ha="center", va="center", color="white", fontsize=7)
+        fig4.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Reward")
+        fig4.savefig(
+            os.path.join(run_dir, "figure4_multi_reward_heatmap.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close(fig4)
+        print("Saved figure4_multi_reward_heatmap.png")
 
 print("Figures successfully generated with correct linear data scaling and numeric labels.")

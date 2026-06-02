@@ -23,6 +23,10 @@ GLOBAL_DIM = FLAT_GLOBAL_DIM  # backward-compatible alias
 PAIR_EMBED_DIM = 2
 SCORING_GLOBAL_DIM = FLAT_GLOBAL_DIM + PAIR_EMBED_DIM
 
+# Weight-conditioned path-scoring DQN: scoring global + normalized reward weights.
+REWARD_WEIGHT_DIM = 5  # w1, w2, w3, w4, w_probe
+CONDITIONAL_SCORING_GLOBAL_DIM = SCORING_GLOBAL_DIM + REWARD_WEIGHT_DIM
+
 # Per path: latency, loss, hops, relative bandwidth, utilization, static bw, trust.
 PATH_FEATURE_DIM = 7
 
@@ -56,6 +60,17 @@ class RewardWeights:
 
 
 DEFAULT_REWARD_WEIGHTS = RewardWeights().to_dict()
+
+
+def encode_reward_weights(
+    weights: Optional[Union[RewardWeights, Mapping[str, float]]] = None,
+) -> np.ndarray:
+    """Fixed-size encoding of reward weights for conditional policies (dim 5)."""
+    w = weights if isinstance(weights, RewardWeights) else RewardWeights.from_mapping(weights)
+    return np.array(
+        [w.w1, w.w2, w.w3, w.w4, w.w_probe],
+        dtype=np.float32,
+    )
 
 
 def reward_from_path_metrics(
@@ -321,6 +336,13 @@ class EvaluationPathSelectionEnv:
             trust = max(0.0, min(1.0, 1.0 - (w.w3 * loss + w.w4 * min(100.0, lat_ms) / 100.0)))
             rows[path_idx] = (lat, loss, hop, bw_ratio, util, static_bw, trust)
         return {"global": self.observe_scoring_global(), "paths": rows}
+
+    def observe_scoring_conditional(self) -> Dict[str, np.ndarray]:
+        """Scoring observation with ``encode_reward_weights`` appended to ``global``."""
+        obs = self.observe_scoring()
+        wvec = encode_reward_weights(self.reward_weights)
+        obs["global"] = np.concatenate([obs["global"], wvec]).astype(np.float32)
+        return obs
 
     def observe(self, mode: ObservationMode = "flat") -> Union[np.ndarray, Dict[str, np.ndarray]]:
         if mode == "scoring":
