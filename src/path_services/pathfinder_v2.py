@@ -191,9 +191,9 @@ class PathFinderV2:
         """Find paths within a single ISD using up-down segments"""
         paths = []
         
-        up_segments = self.segments['up_segments_by_isd'].get(isd, [])
-        down_segments = self.segments['down_segments_by_isd'].get(isd, [])
-        core_segments = self.segments['core_segments']
+        up_segments = self.segments['up'].get(isd, [])
+        down_segments = self.segments['down'].get(isd, [])
+        core_segments = self.segments['core']
         
         # Find up segments from src
         src_up = [s for s in up_segments if s['src'] == src]
@@ -244,9 +244,9 @@ class PathFinderV2:
         """Find paths between different ISDs using up-core-down"""
         paths = []
         
-        up_segments = self.segments['up_segments_by_isd'].get(src_isd, [])
-        core_segments = self.segments['core_segments']
-        down_segments = self.segments['down_segments_by_isd'].get(dst_isd, [])
+        up_segments = self.segments['up'].get(src_isd, [])
+        core_segments = self.segments['core']
+        down_segments = self.segments['down'].get(dst_isd, [])
         
         # Find valid combinations
         src_up = [s for s in up_segments if s['src'] == src]
@@ -361,11 +361,11 @@ def generate_test_segments(topology_path: Path, output_path: Path):
                   u_if=edge['u_if'], v_if=edge['v_if'],
                   type=edge['type'])
     
-    # Generate segments more aggressively
+        # Generate segments more aggressively
     segment_store = {
-        'core_segments': [],
-        'up_segments_by_isd': {},
-        'down_segments_by_isd': {}
+        'core': [],
+        'up': {},
+        'down': {}
     }
     
     # Core segments between all core pairs
@@ -376,7 +376,7 @@ def generate_test_segments(topology_path: Path, output_path: Path):
                 paths = list(nx.all_shortest_paths(G, src, dst))[:3]
                 for path in paths:
                     segment = create_segment_from_path(G, path)
-                    segment_store['core_segments'].append({
+                    segment_store['core'].append({
                         'path': segment,
                         'type': 'core',
                         'src': src,
@@ -419,8 +419,8 @@ def generate_test_segments(topology_path: Path, output_path: Path):
                             'isd': isd
                         })
         
-        segment_store['up_segments_by_isd'][isd] = up_segs
-        segment_store['down_segments_by_isd'][isd] = down_segs
+        segment_store['up'][isd] = up_segs
+        segment_store['down'][isd] = down_segs
     
     with open(output_path, 'wb') as f:
         pickle.dump(segment_store, f)

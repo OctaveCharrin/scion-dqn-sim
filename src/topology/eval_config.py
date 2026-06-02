@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
 
@@ -86,54 +87,58 @@ def run_brite_topology_generation(
     java = dict(nested_get(br, "java_model", default={}) or {})
     cnv = nested_get(br, "convert", default={}) or {}
 
-    config_file = topo_dir / "brite_config.conf"
-    ext = nested_get(br, "external_config_path")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_dir_path = Path(temp_dir)
+        config_file = temp_dir_path / "brite_config.conf"
+        ext = nested_get(br, "external_config_path")
 
-    search_bases = [Path.cwd(), REPO_ROOT, REPO_ROOT / "evaluation"]
+        search_bases = [Path.cwd(), REPO_ROOT, REPO_ROOT / "evaluation"]
 
-    if ext:
-        src = resolve_user_path(ext, search_bases)
-        print(f"\n1. Using external BRITE configuration: {src}")
-        shutil.copy2(src, config_file)
-        print(f"   Copied to: {config_file}")
-    else:
-        print("\n1. Generating BRITE configuration...")
-        _eval_n = os.environ.get("EVAL_BRITE_N_NODES", "").strip()
-        if _eval_n.isdigit():
-            java["n_nodes"] = int(_eval_n)
-            print(f"   (EVAL_BRITE_N_NODES override: n_nodes={java['n_nodes']})")
-        brite_gen = BRITEConfigGenerator()
-        brite_gen.generate(str(config_file), **java)
-        print(f"   BRITE config saved to: {config_file}")
+        if ext:
+            src = resolve_user_path(ext, search_bases)
+            print(f"\n1. Using external BRITE configuration: {src}")
+            shutil.copy2(src, config_file)
+        else:
+            print("\n1. Generating BRITE configuration...")
+            _eval_n = os.environ.get("EVAL_BRITE_N_NODES", "").strip()
+            if _eval_n.isdigit():
+                java["n_nodes"] = int(_eval_n)
+                print(f"   (EVAL_BRITE_N_NODES override: n_nodes={java['n_nodes']})")
 
-    print("\n2. Running BRITE...")
-    brite_stem = topo_dir / "topology"
-    brite_output = run_brite(Path(config_file), Path(brite_stem), brite_path=brite_path)
-    print(f"   BRITE topology saved to: {brite_output}")
+            brite_gen = BRITEConfigGenerator()
+            brite_gen.generate(str(config_file), **java)
 
-    root_seed = nested_get(cfg, "seed", default=None)
-    extra_seed = _coalesce_int(nested_get(cnv, "extra_peering_seed"), root_seed)
-    if extra_seed is None:
-        extra_seed = 42
+        print("\n2. Running BRITE...")
+        brite_stem = temp_dir_path / "topology"
+        brite_output = run_brite(Path(config_file), Path(brite_stem), brite_path=brite_path)
 
-    prune_frac_raw = nested_get(cnv, "prune_cross_isd_noncore_fraction", default=0.0)
-    prune_frac = float(prune_frac_raw) if prune_frac_raw is not None else 0.0
-    prune_seed = _coalesce_int(
-        nested_get(cnv, "prune_cross_isd_noncore_seed"),
-        extra_seed,
-    )
+        root_seed = nested_get(cfg, "seed", default=None)
+        extra_seed = _coalesce_int(nested_get(cnv, "extra_peering_seed"), root_seed)
+        if extra_seed is None:
+            extra_seed = 42
 
-    converter = BRITE2SCIONConverter(
-        n_isds=int(nested_get(conv_cfg, "n_isds", default=3)),
-        core_ratio=float(nested_get(conv_cfg, "core_ratio", default=0.075)),
-    )
-    plot_dir = topo_dir if save_png else None
-    print(f"\n3. Converting to SCION topology (plot_dir={'set' if plot_dir else 'none'})...")
-    return converter.convert_brite_file(
-        brite_output,
-        plot_dir=plot_dir,
-        extra_peering_max_links=nested_get(cnv, "extra_peering_max_links"),
-        extra_peering_seed=extra_seed,
-        prune_cross_isd_noncore_fraction=prune_frac,
-        prune_cross_isd_noncore_seed=prune_seed,
-    )
+        prune_frac_raw = nested_get(cnv, "prune_cross_isd_noncore_fraction", default=0.0)
+        prune_frac = float(prune_frac_raw) if prune_frac_raw is not None else 0.0
+        prune_seed = _coalesce_int(
+            nested_get(cnv, "prune_cross_isd_noncore_seed"),
+            extra_seed,
+        )
+
+        converter = BRITE2SCIONConverter(
+            n_isds=int(nested_get(conv_cfg, "n_isds", default=3)),
+            core_ratio=float(nested_get(conv_cfg, "core_ratio", default=0.075)),
+        )
+        # Disable plots for a cleaner topology directory by default unless strongly necessary, 
+        # or put them in topo_dir still.
+        plot_dir = topo_dir if save_png else None
+        print(
+            f"\n3. Converting to SCION topology (plot_dir={'set' if plot_dir else 'none'})..."
+        )
+        return converter.convert_brite_file(
+            brite_output,
+            plot_dir=plot_dir,
+            extra_peering_max_links=nested_get(cnv, "extra_peering_max_links"),
+            extra_peering_seed=extra_seed,
+            prune_cross_isd_noncore_fraction=prune_frac,
+            prune_cross_isd_noncore_seed=prune_seed,
+        )

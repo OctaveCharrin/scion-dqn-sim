@@ -25,7 +25,7 @@ import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
 
@@ -47,7 +47,7 @@ class PCB:
         )
 
 
-class CorrectedBeaconSimulator:
+class BeaconSimulator:
     """SCION beacon simulator with proper interface tracking and SCION-compliant
     propagation rules (top-down intra-ISD, peer-link skip).
     """
@@ -91,16 +91,17 @@ class CorrectedBeaconSimulator:
             env_so = os.environ.get("BEACON_MAX_SEGMENTS_PER_ORIGIN")
             self.max_segments_per_origin = int(env_so) if env_so else 200
 
-    def simulate(self, G_in: nx.Graph, core_ases: set, output_dir: Path) -> Dict:
+    def simulate(self, G_in: nx.Graph, core_ases: set, output_dir: Optional[Path] = None) -> Tuple[Dict, Dict]:
         """Run beacon simulation with proper interface tracking.
 
         Args:
-            topology_path: Path to topology pickle.
-            output_dir: Directory for outputs.
+            G_in: SCION topology as an undirected NetworkX graph.
+            core_ases: Core AS identifiers.
+            output_dir: Optional directory for ``segments.json`` / stats.
 
         Returns:
-            ``(segment_store, stats)`` tuple where ``segment_store`` is the
-            legacy dict shape consumed by the path builder.
+            ``(segment_store, stats)`` where ``segment_store`` has keys
+            ``core``, ``up`` (by ISD), and ``down`` (by ISD) for the path builder.
         """
         print("=== SCION Beacon Simulation ===\n")
         self._intra_budget_warned = False
@@ -127,19 +128,15 @@ class CorrectedBeaconSimulator:
         print("\nPhase 2: Intra-ISD Beaconing")
         intra_stats = self._simulate_intra_beaconing()
 
-        # Save results
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        # Save results if output_dir is provided
+        if output_dir is not None:
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Convert to legacy format for compatibility
-        segment_store = self._convert_to_legacy_format()
-
-        with open(output_dir / "segments_corrected.json", "w") as f:
-            json.dump(segment_store, f)
-
-        # Save detailed segments with metadata
-        with open(output_dir / "segments_detailed.json", "w") as f:
-            json.dump(self.segments, f)
+            with open(output_dir / "segments.json", "w") as f:
+                json.dump(self.segments, f)
+        else:
+            pass
 
         # Generate statistics
         stats = {
@@ -154,10 +151,11 @@ class CorrectedBeaconSimulator:
             },
         }
 
-        with open(output_dir / "beacon_stats_corrected.json", "w") as f:
-            json.dump(stats, f)
+        if output_dir is not None:
+            with open(output_dir / "beacon_stats.json", "w") as f:
+                json.dump(stats, f)
 
-        return segment_store, stats
+        return self.segments, stats
 
     def _build_graph(self, G_in: nx.Graph) -> nx.MultiDiGraph:
         """Build directed MultiDiGraph with proper parent-child orientation."""
@@ -563,27 +561,3 @@ class CorrectedBeaconSimulator:
         self.segments["up"][isd].append(up_segment)
         stats["up_segments"] += 1
         return True
-
-    def _convert_to_legacy_format(self) -> Dict:
-        """Convert to format expected by PathFinder"""
-        legacy = {
-            "core_segments": self.segments["core"],
-            "up_segments_by_isd": dict(self.segments["up"]),
-            "down_segments_by_isd": dict(self.segments["down"]),
-        }
-
-        return legacy
-
-
-def run_corrected_simulation(topology_path: Path, output_dir: Path):
-    """Run the SCION beacon simulation and print summary stats."""
-    simulator = CorrectedBeaconSimulator()
-    segment_store, stats = simulator.simulate(topology_path, output_dir)
-
-    print("\n=== Simulation Complete ===")
-    print("\nTotal segments discovered:")
-    print(f"  Core: {stats['totals']['core_segments']}")
-    print(f"  Up: {stats['totals']['up_segments']}")
-    print(f"  Down: {stats['totals']['down_segments']}")
-
-    return segment_store, stats

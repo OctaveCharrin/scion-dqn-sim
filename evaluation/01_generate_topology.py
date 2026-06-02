@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import pickle
 from datetime import datetime
 from pathlib import Path
 
@@ -38,25 +37,15 @@ def main() -> None:
         help="Run directory (created if missing when omitted).",
     )
     parser.add_argument(
-        "--topology-config",
-        "-C",
+        "--config",
+        "-c",
         type=Path,
         default=None,
         help="YAML file overriding defaults (merged on top of topology_defaults.yaml).",
     )
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=None,
-        help="Legacy: path to an existing BRITE .conf (overrides brite.external_config_path).",
-    )
     args = parser.parse_args()
 
-    cfg = load_unified_topology_config(args.topology_config)
-    if args.config is not None:
-        if "brite" not in cfg or not isinstance(cfg["brite"], dict):
-            cfg["brite"] = {}
-        cfg["brite"]["external_config_path"] = str(args.config)
+    cfg = load_unified_topology_config(args.config)
 
     if args.run_dir:
         run_dir = args.run_dir
@@ -97,11 +86,6 @@ def main() -> None:
 
     G = scion_topo["graph"]
 
-    topology_file = topo_dir / "scion_topology.pkl"
-    with open(topology_file, "wb") as f:
-        pickle.dump(scion_topo, f)
-    print(f"\nSCION topology saved to: {topology_file}")
-
     json_data = {
         "isds": scion_topo["isds"],
         "core_ases": list(scion_topo["core_ases"]),
@@ -110,7 +94,7 @@ def main() -> None:
     json_file = topo_dir / "scion_topology.json"
     with open(json_file, "w") as f:
         json.dump(json_data, f, indent=2, default=str)
-    print(f"SCION topology JSON saved to: {json_file}")
+    print(f"\nSCION topology JSON saved to: {json_file}")
 
     print("\nTopology Statistics:")
     print(f"   - Total ASes: {G.number_of_nodes()}")

@@ -44,3 +44,8 @@ minversion = "7.0"
 testpaths = ["tests"]
 addopts = "-ra"
 
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+

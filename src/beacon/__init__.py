@@ -8,6 +8,6 @@ Implements:
 - Efficient segment storage
 """
 
-from .beacon_sim_v2 import CorrectedBeaconSimulator
+from .beacon_sim import BeaconSimulator
 
-__all__ = ['CorrectedBeaconSimulator']
+__all__ = ['BeaconSimulator']

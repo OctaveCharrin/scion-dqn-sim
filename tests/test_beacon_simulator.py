@@ -1,6 +1,6 @@
-"""Tests for ``src/beacon/beacon_sim_v2.CorrectedBeaconSimulator``.
+"""Tests for :class:`~src.beacon.beacon_sim.BeaconSimulator`.
 
-Targets the new SCION-correctness invariants:
+SCION-correctness invariants:
 
 * Intra-ISD beaconing flows top-down only — children do not back-propagate
   PCBs to their parents.
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import networkx as nx
 
-from src.beacon.beacon_sim_v2 import CorrectedBeaconSimulator
+from src.beacon.beacon_sim import BeaconSimulator
 
 
 def _build_graph():
@@ -37,28 +37,27 @@ def _build_graph():
 
 def test_intra_beacons_are_top_down_only(tmp_path: Path):
     G, core_ases = _build_graph()
-    sim = CorrectedBeaconSimulator(max_segments_per_origin=200)
+    sim = BeaconSimulator(max_segments_per_origin=200)
     segments, _stats = sim.simulate(G, core_ases, tmp_path)
 
-    isd0_down = segments["down_segments_by_isd"].get(0, [])
+    isd0_down = segments["down"].get(0, [])
     paths_isd0 = {tuple(s["path"]) for s in isd0_down}
     assert (0, 1) in paths_isd0
     assert (0, 1, 2) in paths_isd0
 
-    # No down segment should originate at a non-core (intra-ISD beacons
-    # originate only at cores).
+    # Intra-ISD PCBs originate at cores only.
     non_core_origins = [s for s in isd0_down if s["src"] in (1, 2)]
     assert non_core_origins == []
 
 
 def test_peer_edges_not_used_for_beacons(tmp_path: Path):
     G, core_ases = _build_graph()
-    sim = CorrectedBeaconSimulator(max_segments_per_origin=200)
+    sim = BeaconSimulator(max_segments_per_origin=200)
     segments, _stats = sim.simulate(G, core_ases, tmp_path)
 
     # PEER edge is between AS 2 (ISD 0) and AS 11 (ISD 1). No intra-ISD segment
     # should ever contain ASes from a different ISD.
-    for key in ("down_segments_by_isd", "up_segments_by_isd"):
+    for key in ("down", "up"):
         for _isd, seg_list in segments[key].items():
             for seg in seg_list:
                 p = seg["path"]
@@ -66,18 +65,17 @@ def test_peer_edges_not_used_for_beacons(tmp_path: Path):
                     f"peer edge leaked into intra segment {p!r}"
                 )
 
-    # Core segments may only contain core ASes (the only core link is 0-10).
-    for seg in segments["core_segments"]:
+    for seg in segments["core"]:
         p = seg["path"]
         assert all(node in (0, 10) for node in p)
 
 
 def test_core_segments_are_directional_per_origin(tmp_path: Path):
     G, core_ases = _build_graph()
-    sim = CorrectedBeaconSimulator(max_segments_per_origin=200)
+    sim = BeaconSimulator(max_segments_per_origin=200)
     segments, _stats = sim.simulate(G, core_ases, tmp_path)
 
-    core_paths = {tuple(s["path"]) for s in segments["core_segments"]}
+    core_paths = {tuple(s["path"]) for s in segments["core"]}
     # Both directions should be discovered (each core originates beacons).
     assert (0, 10) in core_paths
     assert (10, 0) in core_paths

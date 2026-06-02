@@ -71,7 +71,7 @@ Pipeline orchestration lives in **`src/pipeline/`** (run-directory resolution, s
 **Steps executed:**
 
 1. **`01_generate_topology.py`** — Reads **`evaluation/topology_defaults.yaml`** (override with **`--topology-config PATH`**). Set **`generator: brite`** (default). Writes **`topology/scion_topology.{json,pkl}`** with `node['role']` set, **`topology/topology_config_resolved.yaml`** (effective merged config), and under **`topology/`** BRITE artifacts + three **`step*.png`** snapshots when **`output.save_step_pngs`** is true.
-2. **`02_run_beaconing.py`** — Runs the SCION beacon simulator (top-down intra-ISD propagation, core-mesh beaconing, PEER edges skipped). Writes **`path_store.pkl`** with paths for **multiple AS pairs** (`pair_pool`) plus a legacy **`selected_pair.json`** for the diverse "best" pair.
+2. **`02_run_beaconing.py`** — Runs **`BeaconSimulator`** (core-mesh + top-down intra-ISD PCBs; peer links excluded from beacon propagation), discovers Up→Core→Down paths, and writes **`path_store.json`**, **`selected_pair.json`** (`pair_pool`), and **`beacon_output/`** segment artifacts.
 3. **`03_simulate_traffic.py`** — Generates 28 days of hourly foreground demand for every routable pair, draws random background traffic per hour, and aggregates load **per link** so paths share bottlenecks. Writes **`link_states.pkl`** keyed by hour and pair.
 4. **`04_train_dqn.py`** — Multi-pair DQN training on the first 14 days. Stateful episodes (γ matters), action masking, real per-pair link-state featurization. Goodput cap auto-derived from path bandwidths so the reward stops saturating.
 5. **`05_evaluate_methods.py`** — Baselines + DQN over the last 14 days × the pair pool. Probe cost is reported via `env.last_probe_cost_ms` so DQN and baselines are compared on the same accounting.
@@ -89,7 +89,7 @@ EVAL_BRITE_N_NODES=45 uv run python run_full_evaluation.py
 | File | Description |
 |------|-------------|
 | `topology/scion_topology.json` / `topology/scion_topology.pkl` | Topology (plus `topology/topology_config_resolved.yaml`; BRITE: `step*.png`, `brite_config.conf`, `topology.brite` when plots enabled) |
-| `path_store.pkl`, `selected_pair.json` | Paths and evaluation pair |
+| `path_store.json`, `selected_pair.json`, `beacon_output/` | Paths, pair pool, beacon segments |
 | `traffic_flows.pkl`, `link_states.pkl` | Traffic and link dynamics |
 | `dqn_model.pth`, `training_stats.json` | Trained agent and training log |
 | `evaluation_results.json` | Metrics for all methods |

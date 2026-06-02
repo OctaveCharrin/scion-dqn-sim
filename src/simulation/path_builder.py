@@ -98,7 +98,8 @@ def build_scion_paths_for_pair(
 ) -> List[Dict[str, Any]]:
     """Build SCION-shaped paths via Up→Core→Down segment composition.
 
-    Uses the ``beacon_sim_v2`` segment store. Peer links and shortcuts
+    Uses the :class:`~src.beacon.beacon_sim.BeaconSimulator` segment store.
+    Peer links and shortcuts
     between segments are detected from the graph and used to assemble
     additional paths.
 
@@ -131,7 +132,7 @@ def build_scion_paths_for_pair(
     if src_role == 'core':
         up_segs.append({"path": [src], "dst": src})
     else:
-        for s in segment_store.get('up_segments_by_isd', {}).get(src_isd, []):
+        for s in segment_store.get('up', {}).get(src_isd, []):
             if s['src'] == src:
                 up_segs.append(s)
                 
@@ -140,12 +141,12 @@ def build_scion_paths_for_pair(
     if dst_role == 'core':
         down_segs.append({"path": [dst], "src": dst})
     else:
-        for s in segment_store.get('down_segments_by_isd', {}).get(dst_isd, []):
+        for s in segment_store.get('down', {}).get(dst_isd, []):
             if s['dst'] == dst:
                 down_segs.append(s)
 
     # 3. Gather Core segments (Core -> Core)
-    core_segs = segment_store.get('core_segments', [])
+    core_segs = segment_store.get('core', [])
     
     assembled_as_paths = []
     
