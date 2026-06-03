@@ -13,7 +13,7 @@ import pickle
 import logging
 from datetime import datetime
 
-from ..path_services.pathfinder_v2 import PathFinderV2
+from ..path_services.pathfinder import PathFinderV2
 from ..path_services.pathprobe import PathProbe
 from .state_enhanced import EnhancedStateExtractor as StateExtractor
 from .reward_with_probing import RewardCalculatorWithProbing as RewardCalculator
