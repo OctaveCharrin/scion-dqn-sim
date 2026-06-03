@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import pickle
 import random
 from collections import Counter
 from pathlib import Path
@@ -15,43 +14,11 @@ import numpy as np
 from src.beacon.beacon_sim import BeaconSimulator
 from src.simulation.path_builder import build_scion_paths_for_pair
 from src.simulation.path_store import InMemoryPathStore
-from src.simulation.run_context import topology_dir
+from src.simulation.run_context import load_topology_graph
 
 # Cap pair enumeration on large graphs (full mesh is expensive).
 MAX_NODES_FULL_PAIR_SCAN = 200
 LARGE_TOPO_SAMPLE_PAIRS = 40  # multiplier: min(12000, 40 * n)
-
-
-def load_topology_graph(run_path: Path) -> Tuple[nx.Graph, set[int], Dict[str, Any]]:
-    """Load the SCION topology graph and core AS set from step 01 artifacts."""
-    run_path = Path(run_path)
-    topo_dir = topology_dir(run_path)
-    pkl_path = topo_dir / "scion_topology.pkl"
-    json_path = topo_dir / "scion_topology.json"
-
-    if pkl_path.is_file():
-        with open(pkl_path, "rb") as f:
-            scion_topo = pickle.load(f)
-        G = scion_topo["graph"]
-        if not isinstance(G, nx.Graph):
-            raise TypeError(f"Expected NetworkX graph in {pkl_path}")
-        core_ases = {int(x) for x in scion_topo.get("core_ases", set())}
-        topology_data = {
-            "isds": scion_topo.get("isds", []),
-            "core_ases": list(core_ases),
-            "graph": nx.node_link_data(G),
-        }
-        return G, core_ases, topology_data
-
-    if not json_path.is_file():
-        raise FileNotFoundError(
-            f"Missing topology under {topo_dir}. Run 01_generate_topology.py first."
-        )
-    with open(json_path, "r") as f:
-        topology_data = json.load(f)
-    G = nx.node_link_graph(topology_data["graph"])
-    core_ases = {int(x) for x in topology_data.get("core_ases", []) or []}
-    return G, core_ases, topology_data
 
 
 def _enumerate_all_pairs(G: nx.Graph):
@@ -118,9 +85,7 @@ def run_beaconing(run_path: Path) -> Dict[str, Any]:
     segment_store, beacon_stats = simulator.simulate(G, core_ases, beacon_out)
 
     print("\nDiscovering paths from beacon segments (Up → Core → Down)...")
-    path_details, path_counts = discover_paths_for_topology(
-        G, segment_store, core_ases
-    )
+    path_details, path_counts = discover_paths_for_topology(G, segment_store, core_ases)
 
     diverse_pairs = sorted(
         [(pair, c) for pair, c in path_counts.items() if c >= 5],

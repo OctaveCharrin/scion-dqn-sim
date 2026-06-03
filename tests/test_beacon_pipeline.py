@@ -9,11 +9,8 @@ import networkx as nx
 import pytest
 
 from src.beacon.beacon_sim import BeaconSimulator
-from src.simulation.beacon_pipeline import (
-    discover_paths_for_topology,
-    load_topology_graph,
-    run_beaconing,
-)
+from src.simulation.beacon_pipeline import discover_paths_for_topology, run_beaconing
+from src.simulation.run_context import load_topology_graph
 
 
 def _mini_topology(tmp_path: Path) -> Path:
@@ -35,15 +32,6 @@ def _mini_topology(tmp_path: Path) -> Path:
 
     topo_dir = tmp_path / "topology"
     topo_dir.mkdir(parents=True)
-    import pickle
-
-    scion_topo = {
-        "graph": G,
-        "isds": [0, 1],
-        "core_ases": {0, 10},
-    }
-    with open(topo_dir / "scion_topology.pkl", "wb") as f:
-        pickle.dump(scion_topo, f)
     with open(topo_dir / "scion_topology.json", "w") as f:
         json.dump(
             {
@@ -56,7 +44,7 @@ def _mini_topology(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_load_topology_graph_from_pickle(tmp_path: Path):
+def test_load_topology_graph_from_json(tmp_path: Path):
     run = _mini_topology(tmp_path)
     G, core_ases, _ = load_topology_graph(run)
     assert G.number_of_nodes() == 5

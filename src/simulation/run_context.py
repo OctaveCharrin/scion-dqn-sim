@@ -7,6 +7,7 @@ import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+import networkx as nx
 import numpy as np
 
 from src.simulation.evaluation_env import EvaluationPathSelectionEnv, RewardWeights
@@ -20,6 +21,23 @@ def topology_dir(run_dir: str | Path) -> Path:
     return Path(run_dir) / TOPOLOGY_SUBDIR_NAME
 
 
+def load_topology_graph(
+    run_path: Path,
+) -> Tuple[nx.Graph, set[int], Dict[str, Any]]:
+    """Load the SCION topology graph and core AS set from step 01 artifacts."""
+    run_path = Path(run_path)
+    json_path = topology_dir(run_path) / "scion_topology.json"
+    if not json_path.is_file():
+        raise FileNotFoundError(
+            f"Missing {json_path}. Run 01_generate_topology.py first."
+        )
+    with open(json_path, "r") as f:
+        topology_data = json.load(f)
+    G = nx.node_link_graph(topology_data["graph"])
+    core_ases = {int(x) for x in topology_data.get("core_ases", []) or []}
+    return G, core_ases, topology_data
+
+
 def validate_pre_training_artifacts(run_dir: str | Path) -> None:
     """Ensure topology, beaconing, and traffic outputs exist before step 04."""
     root = Path(run_dir)
@@ -28,12 +46,9 @@ def validate_pre_training_artifacts(run_dir: str | Path) -> None:
 
     topo = topology_dir(root) / "scion_topology.json"
     if not topo.is_file():
-        legacy = root / "scion_topology.json"
-        if not legacy.is_file():
-            raise FileNotFoundError(
-                f"Missing topology JSON in {root / TOPOLOGY_SUBDIR_NAME} "
-                f"or {legacy}. Run 01_generate_topology.py first."
-            )
+        raise FileNotFoundError(
+            f"Missing {topo}. Run 01_generate_topology.py first."
+        )
 
     required = [
         root / "path_store.json",
@@ -52,12 +67,19 @@ def validate_pre_training_artifacts(run_dir: str | Path) -> None:
 
 def load_run_context(
     run_path: Path,
-) -> Tuple[Dict[str, Any], InMemoryPathStore, Dict[int, Dict[str, Any]], List[Tuple[int, int]], float]:
+) -> Tuple[
+    Dict[str, Any],
+    InMemoryPathStore,
+    Dict[int, Dict[str, Any]],
+    List[Tuple[int, int]],
+    float,
+]:
     """Load topology, path store, link states, pair pool, and goodput cap."""
     topo_json = topology_dir(run_path) / "scion_topology.json"
     if not topo_json.is_file():
-        leg = run_path / "scion_topology.json"
-        topo_json = leg if leg.is_file() else topo_json
+        raise FileNotFoundError(
+            f"Missing {topo_json}. Run 01_generate_topology.py first."
+        )
     with open(topo_json, "r") as f:
         topology_data = json.load(f)
     with open(run_path / "selected_pair.json", "r") as f:
@@ -91,7 +113,9 @@ def compute_goodput_cap(
     return max(50.0, float(np.percentile(min_bws, 95)) if min_bws else 100.0)
 
 
-def compute_action_dim(path_store: InMemoryPathStore, selected_pair: Dict[str, Any]) -> int:
+def compute_action_dim(
+    path_store: InMemoryPathStore, selected_pair: Dict[str, Any]
+) -> int:
     pair_pool = [
         (int(p[0]), int(p[1]))
         for p in selected_pair.get(

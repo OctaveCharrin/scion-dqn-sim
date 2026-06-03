@@ -10,7 +10,7 @@ Welcome to the `scion-dqn-sim` repository! We simulate the SCION (Scalability, C
 ## Core Concepts & Architecture
 - **SCION Properties**: Relies on Isolation Domains (ISDs), Core/Non-Core ASes, and hierarchical top-down, core-mesh beacon propagation. Peering links and Up/Core/Down Segment assembly form our path generation logic.
 - **Evaluation Pipeline**: The root execution logic lives in `evaluation/`. The pipeline cascades through numbered scripts (`01_generate_topology.py` -> `06_generate_figures.py`).
-- **Data Sharing**: Intermediate data is passed between phases using `.pkl` or `.json` formats within timestamped run directories (`run_YYYYMMDD_HHMMSS/`). Files include `path_store.pkl`, `link_states.pkl`, `traffic_flows.pkl`, `scion_topology.json`. 
+- **Data Sharing**: Intermediate data is passed between phases using `.pkl` or `.json` formats within timestamped run directories (`run_YYYYMMDD_HHMMSS/`). Files include `path_store.json`, `link_states.pkl`, `traffic_flows.pkl`, and `topology/scion_topology.json`. 
 
 ## Best Practices
 - **Run the pipeline**: You can execute the entire pipeline with `uv run python run_full_evaluation.py` from within the `evaluation/` folder.

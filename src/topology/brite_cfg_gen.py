@@ -47,15 +47,11 @@ class BRITEConfigGenerator:
         """
         Generate a BRITE .conf file.
 
-        Common kwargs: n_nodes (or legacy alias num_as), model_name, hs, ls, m,
-        bw_min, bw_max, bw_dist, p, q (required for AS Barabasi-Albert 2).
+        Common kwargs: n_nodes, model_name, hs, ls, m, bw_min, bw_max, bw_dist,
+        p, q (required for AS Barabasi-Albert 2).
         """
         config = self.config.copy()
         config.update(kwargs)
-        # Legacy alias: callers that pass ``num_as`` mean the same thing as
-        # ``n_nodes`` unless they also passed ``n_nodes`` explicitly.
-        if "num_as" in kwargs and "n_nodes" not in kwargs:
-            config["n_nodes"] = kwargs["num_as"]
 
         conf_content = self._format_brite_config(config)
         output_path = Path(output_path)

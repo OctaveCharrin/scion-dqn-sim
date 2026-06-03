@@ -44,15 +44,6 @@ def test_brite_config_includes_pq_for_barabasi2():
         assert "q = 0.15" in content
 
 
-def test_brite_config_legacy_num_as_alias():
-    gen = BRITEConfigGenerator()
-    with tempfile.TemporaryDirectory() as tmpdir:
-        out = Path(tmpdir) / "legacy.conf"
-        gen.generate(out, num_as=12)
-        content = out.read_text()
-        assert "N = 12" in content
-
-
 def test_run_brite_raises_when_jar_missing(tmp_path: Path):
     from src.topology.brite_cfg_gen import run_brite
 

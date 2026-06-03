@@ -17,7 +17,6 @@ import numpy as np
 
 # Flat DQN: time + aggregate link context only.
 FLAT_GLOBAL_DIM = 5
-GLOBAL_DIM = FLAT_GLOBAL_DIM  # backward-compatible alias
 
 # Path-scoring DQN: flat context + normalized (src, dst) pair embedding.
 PAIR_EMBED_DIM = 2
@@ -81,7 +80,7 @@ def reward_from_path_metrics(
     max_possible_bw: Optional[float] = None,
     probe_cost_ms: float = 0.0,
 ) -> float:
-    """Backward-compatible wrapper around ``EvaluationPathSelectionEnv.compute_reward``."""
+    """Compute reward from path metrics using the env's ``compute_reward``."""
     return env.compute_reward(
         path_metrics,
         max_possible_bw=max_possible_bw,

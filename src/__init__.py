@@ -1,8 +1,5 @@
 """
-SCION AS-Level Simulation Platform - GraphBLAS Implementation
-
-A high-performance simulation platform for SCION networks using SuiteSparse GraphBLAS
-for efficient graph operations on large-scale topologies (10-1000 ASes).
+SCION AS-level simulation platform for DQN-based path selection evaluation.
 """
 
 __version__ = "2.0.0"

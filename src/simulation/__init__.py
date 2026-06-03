@@ -4,7 +4,6 @@ from .path_store import InMemoryPathStore
 from .evaluation_env import (
     DEFAULT_REWARD_WEIGHTS,
     FLAT_GLOBAL_DIM,
-    GLOBAL_DIM,
     PAIR_EMBED_DIM,
     PATH_FEATURE_DIM,
     SCORING_GLOBAL_DIM,
@@ -27,7 +26,6 @@ from .link_traffic_sim import simulate_link_traffic
 __all__ = [
     "DEFAULT_REWARD_WEIGHTS",
     "FLAT_GLOBAL_DIM",
-    "GLOBAL_DIM",
     "PAIR_EMBED_DIM",
     "PATH_FEATURE_DIM",
     "SCORING_GLOBAL_DIM",

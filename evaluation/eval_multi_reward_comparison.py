@@ -88,9 +88,7 @@ def _load_agents(run_path: Path, action_dim: int) -> Dict[str, Any]:
             int(ckpt.get("action_dim", action_dim)),
             cfg,
         )
-        agent.q_network.load_state_dict(
-            ckpt.get("q_network") or ckpt["model_state_dict"]
-        )
+        agent.q_network.load_state_dict(ckpt["q_network"])
         agent.epsilon = 0.0
         agents["dqn"] = agent
 

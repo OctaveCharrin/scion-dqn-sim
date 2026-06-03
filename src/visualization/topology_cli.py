@@ -85,19 +85,11 @@ def main(argv: list[str] | None = None) -> None:
         base_dir = Path(run_dir).resolve()
         tdir = topology_dir(base_dir)
         topo_json = tdir / "scion_topology.json"
-        topo_pkl = tdir / "scion_topology.pkl"
         if topo_json.is_file():
             topo_path = topo_json
-        elif topo_pkl.is_file():
-            topo_path = topo_pkl
-        elif (base_dir / "scion_topology.json").is_file():
-            topo_path = base_dir / "scion_topology.json"
-        elif (base_dir / "scion_topology.pkl").is_file():
-            topo_path = base_dir / "scion_topology.pkl"
         else:
             raise SystemExit(
-                f"No scion_topology.json or scion_topology.pkl under {tdir} "
-                f"(or legacy location {base_dir})"
+                f"No scion_topology.json under {tdir}. Run 01_generate_topology.py first."
             )
 
     if not topo_path.is_file():

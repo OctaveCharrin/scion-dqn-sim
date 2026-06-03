@@ -7,15 +7,13 @@ Creates visual representations of SCION topologies with:
 - Link type differentiation
 - Geographic layout preservation
 
-Supports both **pickle** topologies (``nodes`` / ``edges`` DataFrames, legacy CLI
-shape) and **evaluation JSON** (``scion_topology.json`` with ``graph`` +
-``core_ases`` + ``isds``), via :func:`load_topology_tables`.
+Loads **evaluation JSON** (``scion_topology.json`` with ``graph``, ``core_ases``,
+``isds``) via :func:`load_topology_tables`.
 """
 
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -163,16 +161,11 @@ def json_topology_to_frames(
 def load_topology_tables(
     path: Path,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
-    """Load ``nodes`` / ``edges`` frames from a pickle topology or ``scion_topology.json``."""
+    """Load ``nodes`` / ``edges`` frames from ``scion_topology.json``."""
     path = Path(path)
-    if path.suffix.lower() == ".json":
-        return json_topology_to_frames(path)
-    with open(path, "rb") as f:
-        topology = pickle.load(f)
-    node_df = topology["nodes"]
-    edge_df = topology["edges"]
-    meta = {"source": "pickle", "keys": list(topology.keys())}
-    return node_df, edge_df, meta
+    if path.suffix.lower() != ".json":
+        raise ValueError(f"Expected scion_topology.json, got: {path}")
+    return json_topology_to_frames(path)
 
 
 class TopologyVisualizer:
@@ -183,7 +176,7 @@ class TopologyVisualizer:
     CORE_COLOR = "#2C3E50"
     NON_CORE_COLOR = "#95A5A6"
 
-    # Link styles — keys match ``edge['type']`` from pickles *or* JSON
+    # Link styles — keys match ``edge['type']`` from topology JSON
     # (``convert_brite_file`` uses SCREAMING_SNAKE, e.g. ``PARENT_CHILD``).
     LINK_STYLES = {
         "core": {"color": "#E74C3C", "width": 3.0, "style": "-"},
@@ -217,7 +210,7 @@ class TopologyVisualizer:
         """
         Create a full dashboard: main geographic map + degree / ISD / link charts.
 
-        ``topology_path`` may be a **pickle** topology or ``scion_topology.json``.
+        ``topology_path`` must be ``scion_topology.json``.
         """
         node_df, edge_df, _meta = load_topology_tables(Path(topology_path))
         topology_dict = {"nodes": node_df, "edges": edge_df}
@@ -752,7 +745,7 @@ def render_scion_topology_png(
     dpi: int = 200,
     show_interactive: bool = False,
 ) -> Path:
-    """Single-panel geographic map (pickle or JSON). Saves PNG; optional ``plt.show()``."""
+    """Single-panel geographic map from JSON. Saves PNG; optional ``plt.show()``."""
     topology_path = Path(topology_path)
     output_png = Path(output_png)
     node_df, edge_df, _meta = load_topology_tables(topology_path)
@@ -795,7 +788,7 @@ def create_topology_report(topology_path: Path, output_dir: Path):
     """
     Create a comprehensive topology report with visualizations and statistics.
 
-    ``topology_path`` may be a **pickle** topology or ``scion_topology.json``.
+    ``topology_path`` must be ``scion_topology.json``.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)

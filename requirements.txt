@@ -1,11 +1,9 @@
 # Prefer `uv sync` (see README). Versions mirror [project.dependencies] in pyproject.toml.
-simpy>=4.0.0
 networkx>=3.0
 numpy>=1.24.0
 pandas>=2.0.0
 scipy>=1.10.0
 torch>=2.0.0
-gymnasium>=0.29.0
 scikit-learn>=1.3.0
 python-louvain>=0.16
 matplotlib>=3.7.0

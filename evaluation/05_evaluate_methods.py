@@ -20,6 +20,7 @@ from tqdm import tqdm
 from src.pipeline.run_dirs import resolve_run_dir
 from src.simulation.evaluation_env import (
     CONDITIONAL_SCORING_GLOBAL_DIM,
+    FLAT_GLOBAL_DIM,
     PATH_FEATURE_DIM,
     SCORING_GLOBAL_DIM,
     RewardWeights,
@@ -93,13 +94,11 @@ if _model_path.is_file():
     if model_checkpoint:
         config: EnhancedDQNConfig = model_checkpoint["config"]
         dqn_agent = EnhancedDQNAgent(
-            int(model_checkpoint.get("state_dim", 5)),
+            int(model_checkpoint.get("state_dim", FLAT_GLOBAL_DIM)),
             int(model_checkpoint.get("action_dim", action_dim)),
             config,
         )
-        dqn_agent.q_network.load_state_dict(
-            model_checkpoint.get("q_network") or model_checkpoint["model_state_dict"]
-        )
+        dqn_agent.q_network.load_state_dict(model_checkpoint["q_network"])
         if "target_network" in model_checkpoint:
             dqn_agent.target_network.load_state_dict(model_checkpoint["target_network"])
         dqn_agent.epsilon = 0.0
@@ -112,7 +111,7 @@ if _simple_path.is_file():
     ckpt = _load_checkpoint(_simple_path)
     if ckpt:
         simple_dqn_agent = SimpleDQNAgent(
-            state_dim=int(ckpt.get("state_dim", 5)),
+            state_dim=int(ckpt.get("state_dim", FLAT_GLOBAL_DIM)),
             action_dim=int(ckpt.get("action_dim", action_dim)),
             learning_rate=1e-3,
         )
@@ -121,24 +120,19 @@ if _simple_path.is_file():
             simple_dqn_agent.target_network.load_state_dict(ckpt["target_network"])
         simple_dqn_agent.epsilon = 0.0
 
-for ckpt_path, variant in (
-    (run_path / "dqn_scoring_simple_model.pth", "simple"),
-    (run_path / "dqn_scoring_model.pth", "simple"),
-):
-    ckpt = _load_checkpoint(ckpt_path)
-    if ckpt and scoring_simple_dqn_agent is None:
-        scoring_simple_dqn_agent = SimplePathScoringDQNAgent(
-            global_dim=int(ckpt.get("global_dim", SCORING_GLOBAL_DIM)),
-            path_dim=int(ckpt.get("path_dim", PATH_FEATURE_DIM)),
-            hidden_dim=int(ckpt.get("hidden_dim", 128)),
-        )
-        scoring_simple_dqn_agent.q_network.load_state_dict(ckpt["q_network"])
-        if "target_network" in ckpt:
-            scoring_simple_dqn_agent.target_network.load_state_dict(ckpt["target_network"])
-        scoring_simple_dqn_agent.epsilon = 0.0
-        if ckpt.get("reward_weights"):
-            reward_weights = RewardWeights.from_mapping(ckpt["reward_weights"])
-        break
+_ckpt = _load_checkpoint(run_path / "dqn_scoring_simple_model.pth")
+if _ckpt:
+    scoring_simple_dqn_agent = SimplePathScoringDQNAgent(
+        global_dim=int(_ckpt.get("global_dim", SCORING_GLOBAL_DIM)),
+        path_dim=int(_ckpt.get("path_dim", PATH_FEATURE_DIM)),
+        hidden_dim=int(_ckpt.get("hidden_dim", 128)),
+    )
+    scoring_simple_dqn_agent.q_network.load_state_dict(_ckpt["q_network"])
+    if "target_network" in _ckpt:
+        scoring_simple_dqn_agent.target_network.load_state_dict(_ckpt["target_network"])
+    scoring_simple_dqn_agent.epsilon = 0.0
+    if _ckpt.get("reward_weights"):
+        reward_weights = RewardWeights.from_mapping(_ckpt["reward_weights"])
 
 _enh_path = run_path / "dqn_scoring_enhanced_model.pth"
 _enh_ckpt = _load_checkpoint(_enh_path)

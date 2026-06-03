@@ -88,7 +88,7 @@ EVAL_BRITE_N_NODES=45 uv run python run_full_evaluation.py
 
 | File | Description |
 |------|-------------|
-| `topology/scion_topology.json` / `topology/scion_topology.pkl` | Topology (plus `topology/topology_config_resolved.yaml`; BRITE: `step*.png`, `brite_config.conf`, `topology.brite` when plots enabled) |
+| `topology/scion_topology.json` | Topology (plus `topology/topology_config_resolved.yaml`; BRITE: `step*.png`, `brite_config.conf`, `topology.brite` when plots enabled) |
 | `path_store.json`, `selected_pair.json`, `beacon_output/` | Paths, pair pool, beacon segments |
 | `traffic_flows.pkl`, `link_states.pkl` | Traffic and link dynamics |
 | `dqn_model.pth`, `training_stats.json` | Trained agent and training log |
@@ -115,7 +115,7 @@ uv run python 06_generate_figures.py run_YYYYMMDD_HHMMSS
 
 ### Topology maps (optional)
 
-After a run has `topology/scion_topology.json` (or `topology/scion_topology.pkl`), generate **topology figures** with **`src.visualization.topology_cli`**:
+After a run has `topology/scion_topology.json`, generate **topology figures** with **`src.visualization.topology_cli`** (see also [`src/README.md`](src/README.md)):
 
 ```bash
 # Full dashboard: main geographic map + degree / ISD / link-type panels, plus extra PNGs
