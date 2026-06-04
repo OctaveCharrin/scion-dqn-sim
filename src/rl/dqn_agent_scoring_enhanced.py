@@ -396,7 +396,8 @@ class EnhancedPathScoringDQNAgent:
             self.q_network.parameters(), self.config.gradient_clip
         )
         self.optimizer.step()
-        self.scheduler.step()
+        if self.steps % self.config.target_update_every == 0:
+            self.scheduler.step()
 
         if self.config.use_prioritized_replay and indices is not None:
             self.memory.update_priorities(indices, td_errors.detach().cpu().numpy())

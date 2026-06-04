@@ -15,6 +15,11 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence, Tuple,
 
 import numpy as np
 
+from src.simulation.link_state_store import (
+    LinkTrafficState,
+    build_pair_path_link_idx_for_pool,
+)
+
 # Flat DQN: time + aggregate link context only.
 FLAT_GLOBAL_DIM = 5
 
@@ -119,7 +124,7 @@ class EvaluationPathSelectionEnv:
         self,
         topology_data: Dict[str, Any],
         path_store: Any,
-        link_states: Dict[int, Dict[str, Any]],
+        link_states: Union[LinkTrafficState, Dict[int, Dict[str, Any]]],
         latency_probe_cost_ms: float = 10.0,
         bandwidth_probe_cost_ms: float = 100.0,
         per_hop_probe_cost_ms: float = 0.5,
@@ -131,10 +136,16 @@ class EvaluationPathSelectionEnv:
         reward_weights: Optional[Union[RewardWeights, Mapping[str, float]]] = None,
         normalize_probe_penalty: bool = True,
         max_as: Optional[int] = None,
+        pair_path_link_idx: Optional[Dict[Tuple[int, int], List[List[int]]]] = None,
     ) -> None:
         self.topology_data = topology_data
         self.path_store = path_store
-        self.link_states = link_states
+        if isinstance(link_states, LinkTrafficState):
+            self._link_state = link_states
+        else:
+            self._link_state = LinkTrafficState(
+                link_keys=[], hours={}, legacy_by_hour=link_states
+            )
         self.latency_probe_cost_ms = float(latency_probe_cost_ms)
         self.bandwidth_probe_cost_ms = float(bandwidth_probe_cost_ms)
         self.per_hop_probe_cost_ms = float(per_hop_probe_cost_ms)
@@ -143,6 +154,16 @@ class EvaluationPathSelectionEnv:
         self.pair_pool: List[Tuple[int, int]] = (
             [(int(s), int(d)) for (s, d) in pair_pool] if pair_pool else []
         )
+        if pair_path_link_idx is not None:
+            self._pair_path_link_idx = pair_path_link_idx
+        elif not self._link_state.is_legacy:
+            self._pair_path_link_idx = build_pair_path_link_idx_for_pool(
+                path_store,
+                self.pair_pool,
+                self._link_state.link_key_to_index,
+            )
+        else:
+            self._pair_path_link_idx = {}
         self.episode_length = max(1, int(episode_length))
         self._rng = random.Random(rng_seed)
 
@@ -310,18 +331,18 @@ class EvaluationPathSelectionEnv:
             }
 
         w = self.reward_weights
-        raw_bws: List[float] = []
+        rows = np.zeros((n, PATH_FEATURE_DIM), dtype=np.float32)
+        raw_bws = np.zeros(n, dtype=np.float64)
         for path_idx in range(n):
-            st = self.current_link_states.get(f"path_{path_idx}", {}) or {}
             sm = self._static_metrics(path_idx)
-            raw_bws.append(
-                float(st.get("available_bandwidth_mbps", sm.get("min_bandwidth", 1000.0)))
+            st = self.current_link_states.get(f"path_{path_idx}", {}) or {}
+            raw_bws[path_idx] = float(
+                st.get("available_bandwidth_mbps", sm.get("min_bandwidth", 1000.0))
             )
-        max_bw = max(raw_bws) if raw_bws else 1.0
+        max_bw = float(raw_bws.max()) if n else 1.0
         if max_bw <= 0.001:
             max_bw = 1.0
 
-        rows = np.zeros((n, PATH_FEATURE_DIM), dtype=np.float32)
         for path_idx in range(n):
             sm = self._static_metrics(path_idx)
             st = self.current_link_states.get(f"path_{path_idx}", {}) or {}
@@ -377,8 +398,9 @@ class EvaluationPathSelectionEnv:
         self.total_probe_cost_ms = 0.0
 
         if hour_idx is None:
-            if self.link_states:
-                hour_idx = self._rng.choice(sorted(self.link_states.keys()))
+            keys = self._link_state.hour_keys()
+            if keys:
+                hour_idx = self._rng.choice(keys)
             else:
                 hour_idx = 0
         self.hour_idx = int(hour_idx)
@@ -387,20 +409,17 @@ class EvaluationPathSelectionEnv:
         return self.observe_flat()
 
     def _refresh_link_states(self) -> None:
-        hour = self.link_states.get(self.hour_idx, {}) or {}
         src = self.current_flow.get("src")
         dst = self.current_flow.get("dst")
-        per_pair = (hour.get("by_pair") or {}) if isinstance(hour, dict) else {}
-        key = f"pair_{int(src)}_{int(dst)}" if src is not None and dst is not None else None
-        block = per_pair.get(key) if key else None
-
-        if block:
-            self.current_link_states = dict(block)
-        else:
-            cleaned = {
-                k: v for k, v in hour.items() if isinstance(k, str) and k.startswith("path_")
-            }
-            self.current_link_states = cleaned
+        if src is None or dst is None:
+            self.current_link_states = {}
+            return
+        self.current_link_states = self._link_state.path_metrics_block(
+            self.hour_idx,
+            int(src),
+            int(dst),
+            self._pair_path_link_idx,
+        )
 
     # ------------------------------------------------------------------ probe
     def probe_path_latency(self, path_index: int) -> Dict[str, Any]:
@@ -503,7 +522,7 @@ class EvaluationPathSelectionEnv:
             num_probes_in_step=num_probes_in_step,
         )
 
-        keys = sorted(self.link_states.keys()) if self.link_states else []
+        keys = self._link_state.hour_keys()
         if keys:
             self.hour_idx = (self.hour_idx + 1) % (max(keys) + 1)
         self._refresh_link_states()

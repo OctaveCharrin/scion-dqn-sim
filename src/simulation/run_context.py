@@ -11,9 +11,17 @@ import networkx as nx
 import numpy as np
 
 from src.simulation.evaluation_env import EvaluationPathSelectionEnv, RewardWeights
+from src.simulation.link_state_store import (
+    LinkTrafficState,
+    build_pair_path_link_idx_for_pool,
+    load_link_traffic_state,
+)
 from src.simulation.path_store import InMemoryPathStore
 
 TOPOLOGY_SUBDIR_NAME = "topology"
+
+# Avoid reloading large ``link_states.pkl`` for every training script in one pipeline run.
+_RUN_CONTEXT_CACHE: Dict[str, Tuple[Any, ...]] = {}
 
 
 def topology_dir(run_dir: str | Path) -> Path:
@@ -67,14 +75,25 @@ def validate_pre_training_artifacts(run_dir: str | Path) -> None:
 
 def load_run_context(
     run_path: Path,
+    *,
+    use_cache: bool = True,
 ) -> Tuple[
     Dict[str, Any],
     InMemoryPathStore,
-    Dict[int, Dict[str, Any]],
+    LinkTrafficState,
     List[Tuple[int, int]],
     float,
 ]:
     """Load topology, path store, link states, pair pool, and goodput cap."""
+    run_path = Path(run_path)
+    cache_key = str(run_path.resolve())
+    link_pkl = run_path / "link_states.pkl"
+    mtime = link_pkl.stat().st_mtime if link_pkl.is_file() else 0.0
+    if use_cache:
+        cached = _RUN_CONTEXT_CACHE.get(cache_key)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]  # type: ignore[return-value]
+
     topo_json = topology_dir(run_path) / "scion_topology.json"
     if not topo_json.is_file():
         raise FileNotFoundError(
@@ -85,8 +104,7 @@ def load_run_context(
     with open(run_path / "selected_pair.json", "r") as f:
         selected_pair = json.load(f)
     path_store = InMemoryPathStore.load(run_path / "path_store.json")
-    with open(run_path / "link_states.pkl", "rb") as f:
-        link_states = pickle.load(f)
+    link_states = load_link_traffic_state(run_path / "link_states.pkl")
 
     src_as = int(selected_pair["source_as"])
     dst_as = int(selected_pair["destination_as"])
@@ -98,7 +116,10 @@ def load_run_context(
         pair_pool = [(src_as, dst_as)]
 
     goodput_cap = compute_goodput_cap(path_store, pair_pool)
-    return topology_data, path_store, link_states, pair_pool, goodput_cap
+    ctx = (topology_data, path_store, link_states, pair_pool, goodput_cap)
+    if use_cache:
+        _RUN_CONTEXT_CACHE[cache_key] = (mtime, ctx)
+    return ctx
 
 
 def compute_goodput_cap(
@@ -136,7 +157,7 @@ def compute_action_dim(
 def make_env(
     topology_data: Dict[str, Any],
     path_store: InMemoryPathStore,
-    link_states: Dict[int, Dict[str, Any]],
+    link_states: LinkTrafficState,
     pair_pool: Sequence[Tuple[int, int]],
     *,
     episode_length: int = 24,
@@ -144,10 +165,18 @@ def make_env(
     reward_weights: Optional[RewardWeights] = None,
     normalize_probe_penalty: bool = True,
 ) -> EvaluationPathSelectionEnv:
+    pair_path_link_idx = None
+    if not link_states.is_legacy:
+        pair_path_link_idx = build_pair_path_link_idx_for_pool(
+            path_store,
+            pair_pool,
+            link_states.link_key_to_index,
+        )
     return EvaluationPathSelectionEnv(
         topology_data=topology_data,
         path_store=path_store,
         link_states=link_states,
+        pair_path_link_idx=pair_path_link_idx,
         latency_probe_cost_ms=10.0,
         bandwidth_probe_cost_ms=100.0,
         per_hop_probe_cost_ms=0.5,

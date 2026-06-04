@@ -34,8 +34,23 @@ TRAINING_HOURS = list(range(14 * 24))
 EPISODE_LENGTH = 24
 
 
+def _training_pair_cap(pair_pool_size: int) -> int:
+    """Cap pair-pool size when scaling training steps (full mesh ≠ more RL steps)."""
+    raw = os.environ.get("DQN_TRAIN_PAIR_CAP", "64").strip()
+    if raw.isdigit():
+        cap = int(raw)
+        return min(pair_pool_size, max(1, cap))
+    return min(pair_pool_size, 64)
+
+
+def _gradient_every() -> int:
+    raw = os.environ.get("DQN_GRADIENT_EVERY", "4").strip()
+    return max(1, int(raw)) if raw.isdigit() else 4
+
+
 def _target_episodes(pair_pool_size: int, episode_length: int = EPISODE_LENGTH) -> int:
-    target_steps = max(2_000, min(50_000, 200 * pair_pool_size))
+    effective_pairs = _training_pair_cap(pair_pool_size)
+    target_steps = max(2_000, min(20_000, 200 * effective_pairs))
     n = max(50, target_steps // episode_length)
     env_eps = os.environ.get("DQN_TRAIN_EPISODES", "").strip()
     if env_eps.isdigit():
@@ -93,8 +108,11 @@ def train_flat_dqn(
     num_episodes: Optional[int] = None,
     checkpoint_path: Optional[Path] = None,
     stats_path: Optional[Path] = None,
+    run_context: Optional[Tuple] = None,
 ) -> Dict[str, Any]:
-    topology_data, path_store, link_states, pair_pool, goodput_cap = load_run_context(run_path)
+    if run_context is None:
+        run_context = load_run_context(run_path)
+    topology_data, path_store, link_states, pair_pool, goodput_cap = run_context
     with open(run_path / "selected_pair.json", "r") as f:
         selected_pair = json.load(f)
     action_dim = compute_action_dim(path_store, selected_pair)
@@ -145,6 +163,7 @@ def train_flat_dqn(
         stats_name = "dqn_simple_training_stats.json"
 
     n_episodes = num_episodes or _target_episodes(len(pair_pool))
+    grad_every = _gradient_every()
     pair_rng = random.Random(123)
     hour_rng = random.Random(456)
     episode_rewards: List[float] = []
@@ -179,16 +198,16 @@ def train_flat_dqn(
             else:
                 agent.remember(state, action, reward, next_state, done)
 
+            total_steps += 1
             if len(agent.memory) >= (
                 config.min_buffer_size if config else agent.min_buffer_size
-            ):
+            ) and total_steps % grad_every == 0:
                 loss = agent.replay()
                 if loss is not None:
                     losses.append(float(loss))
 
             state = next_state
             mask = next_mask
-            total_steps += 1
             if done:
                 break
 
@@ -318,11 +337,13 @@ def train_scoring_dqn(
         )
 
     n_episodes = num_episodes or _target_episodes(len(pair_pool), episode_length)
+    grad_every = _gradient_every()
     pair_rng = random.Random(pair_rng_seed)
     hour_rng = random.Random(hour_rng_seed)
     episode_rewards: List[float] = []
     episode_probes: List[int] = []
     losses: List[float] = []
+    total_steps = 0
 
     ep_iter = range(n_episodes)
     if not quiet:
@@ -344,9 +365,11 @@ def train_scoring_dqn(
             ep_reward += reward
             next_state = env.observe_scoring()
             agent.remember(state, action, reward, next_state, done)
-            loss = agent.replay()
-            if loss is not None:
-                losses.append(float(loss))
+            total_steps += 1
+            if total_steps % grad_every == 0:
+                loss = agent.replay()
+                if loss is not None:
+                    losses.append(float(loss))
             state = next_state
             if done:
                 break
@@ -417,6 +440,7 @@ def train_conditional_scoring_dqn(
     hour_rng_seed: int = 456,
     weight_rng_seed: int = 789,
     quiet: bool = False,
+    run_context: Optional[Tuple] = None,
 ) -> Dict[str, Any]:
     """Train a path-scoring DQN with reward weights in the global state.
 
@@ -424,9 +448,9 @@ def train_conditional_scoring_dqn(
     policy learns to optimize different composite objectives at inference time.
     """
     hp = hp or ScoringHyperparams.from_env()
-    topology_data, path_store, link_states, pair_pool, goodput_cap = load_run_context(
-        run_path
-    )
+    if run_context is None:
+        run_context = load_run_context(run_path)
+    topology_data, path_store, link_states, pair_pool, goodput_cap = run_context
     env = make_env(
         topology_data,
         path_store,
@@ -462,6 +486,7 @@ def train_conditional_scoring_dqn(
     )
 
     n_episodes = num_episodes or _target_episodes(len(pair_pool), episode_length)
+    grad_every = _gradient_every()
     pair_rng = random.Random(pair_rng_seed)
     hour_rng = random.Random(hour_rng_seed)
     weight_rng = random.Random(weight_rng_seed)
@@ -469,6 +494,7 @@ def train_conditional_scoring_dqn(
     episode_probes: List[int] = []
     episode_weight_names: List[str] = []
     losses: List[float] = []
+    total_steps = 0
 
     profile_list = REWARD_PROFILES
     ep_iter = range(n_episodes)
@@ -496,9 +522,11 @@ def train_conditional_scoring_dqn(
             ep_reward += reward
             next_state = env.observe_scoring_conditional()
             agent.remember(state, action, reward, next_state, done)
-            loss = agent.replay()
-            if loss is not None:
-                losses.append(float(loss))
+            total_steps += 1
+            if total_steps % grad_every == 0:
+                loss = agent.replay()
+                if loss is not None:
+                    losses.append(float(loss))
             state = next_state
             if done:
                 break

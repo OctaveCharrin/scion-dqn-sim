@@ -12,8 +12,8 @@ Python package for the SCION AS-level simulator. Numbered scripts in [`evaluatio
 |------|--------|---------------|---------------------------|
 | 01 | `01_generate_topology.py` | `topology.*`, `simulation.run_context` | `topology/scion_topology.json`, BRITE outputs |
 | 02 | `02_run_beaconing.py` | `simulation.beacon_pipeline`, `beacon.beacon_sim` | `path_store.json`, `selected_pair.json`, `beacon_output/` |
-| 03 | `03_simulate_traffic.py` | `simulation.link_traffic_sim`, `traffic_config`, `traffic_metrics` | `link_states.pkl`, `traffic_flows.pkl`, `traffic_inspection.json` |
-| 04 | `04_train_*.py` | `rl.path_selection_train`, DQN agents | `dqn_*_model.pth` |
+| 03 | `03_simulate_traffic.py` | `simulation.link_traffic_sim`, `link_state_store`, `traffic_config` | `link_states.pkl` (compact `link_hourly_v1`), `traffic_flows.pkl`, `traffic_inspection.json` |
+| 04 | `04_train_all_models.py` (or individual `04_train_*.py`) | `rl.path_selection_train`, DQN agents | `dqn_*_model.pth` |
 | 05 | `05_evaluate_methods.py` | `simulation.evaluation_env`, `baselines.*`, `rl.*` | `evaluation_results.json` |
 | — | `eval_multi_reward_comparison.py` | same + `rl.reward_profiles` | `multi_reward_comparison.json` |
 | 06 | `06_generate_figures.py` | `pipeline.figures` | `figures/*.png` |
@@ -31,7 +31,7 @@ flowchart LR
   baselines --> evaluation_env
 ```
 
-**Run layout:** Topology must live at `<run>/topology/scion_topology.json` (step 01). Path store is JSON (`path_store.json`). Traffic state is pickle (`link_states.pkl`).
+**Run layout:** Topology must live at `<run>/topology/scion_topology.json` (step 01). Path store is JSON (`path_store.json`). Traffic state is `link_states.pkl` in compact **`link_hourly_v1`** format (per-link arrays per hour; path metrics derived on demand in the env). Legacy per-pair embedded pickles from older runs are still readable but can be huge (e.g. 10+ GB at 100 ASes)—re-run step 03 after upgrading.
 
 ---
 
@@ -147,6 +147,9 @@ Each selector implements `select_path(paths, metrics, flow, state) -> int`:
 |----------|--------|
 | `EVAL_BRITE_N_NODES` | Override BRITE size (step 01) |
 | `DQN_TRAIN_EPISODES` | Fixed training episode count |
+| `DQN_TRAIN_PAIR_CAP` | Scale steps as if the pool had at most N pairs (default `64`) |
+| `DQN_GRADIENT_EVERY` | Run `replay()` every N env steps (default `4`) |
+| `TRAFFIC_N_JOBS` | Parallel workers for step-03 `link_states` build (default `min(8, cpu_count)`) |
 | `DQN_LR`, `DQN_GAMMA`, `DQN_HIDDEN_DIM`, … | Scoring/flat hyperparameters |
 | `BEACON_MAX_SEGMENTS_PER_ORIGIN`, `BEACON_MAX_INTRA_QUEUE_POPS` | Beacon fan-out |
 | `TRAFFIC_*` | `TrafficSimConfig.from_env()` |

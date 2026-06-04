@@ -57,6 +57,17 @@ def compute_link_metrics_vectorized(
     )
 
 
+def path_metrics_for_pair(
+    path_link_indices: Sequence[Sequence[int]],
+    link_metrics: LinkMetricArrays,
+) -> Dict[str, Dict[str, float]]:
+    """Build ``path_{i}`` metric dicts for all paths of one (src, dst) pair."""
+    per_pair: Dict[str, Dict[str, float]] = {}
+    for path_idx, keys in enumerate(path_link_indices):
+        per_pair[f"path_{path_idx}"] = path_metrics_from_link_indices(keys, link_metrics)
+    return per_pair
+
+
 def path_metrics_from_link_indices(
     link_indices: Sequence[int],
     link_metrics: LinkMetricArrays,

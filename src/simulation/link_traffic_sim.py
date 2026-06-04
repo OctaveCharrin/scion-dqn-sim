@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import random
 from dataclasses import dataclass
@@ -18,9 +19,15 @@ from tqdm import tqdm
 from src.simulation.path_store import InMemoryPathStore
 from src.simulation.run_context import load_topology_graph
 from src.simulation.traffic_config import TrafficSimConfig
+from src.simulation.link_state_store import (
+    LinkTrafficState,
+    build_pair_path_link_idx_for_pool,
+    link_metrics_to_arrays,
+    save_link_traffic_state,
+)
 from src.simulation.traffic_metrics import (
     compute_link_metrics_vectorized,
-    path_metrics_from_link_indices,
+    path_metrics_for_pair,
     summarize_link_loads,
 )
 
@@ -321,40 +328,54 @@ def simulate_link_traffic(
 
         link_loads_by_hour[h] = loads
 
-    print("\nDeriving per-path metrics...")
-    link_states: Dict[int, Dict] = {}
     pair_list = list(paths_by_pair.keys())
-    pair_path_link_idx: Dict[Tuple[int, int], List[List[int]]] = {}
-    for pair, plist in paths_by_pair.items():
-        pair_path_link_idx[pair] = [
-            [link_key_to_index[k] for k in _path_link_keys(p) if k in link_key_to_index]
-            for p in plist
-        ]
+    pair_path_link_idx = build_pair_path_link_idx_for_pool(
+        path_store, pair_list, link_key_to_index
+    )
 
-    for h in tqdm(range(total_hours), desc="link_states", ncols=80):
+    print("\nDeriving hourly link metrics (compact; path metrics on demand)...")
+    link_keys_ordered = list(link_keys)
+    hourly_arrays: Dict[int, Dict[str, np.ndarray]] = {}
+
+    n_jobs = int(os.environ.get("TRAFFIC_N_JOBS", "0").strip() or "0")
+    if n_jobs == 0:
+        n_jobs = min(os.cpu_count() or 1, 8)
+    # Large pair pools: avoid holding all hours in RAM at once (no joblib batch).
+    use_parallel = n_jobs > 1 and total_hours >= 8 and len(pair_list) <= 3000
+
+    def _build_hour_arrays(h: int) -> Tuple[int, Dict[str, np.ndarray]]:
         lm = compute_link_metrics_vectorized(
             link_loads_by_hour[h],
             capacities,
             base_lats,
             util_cap=cfg.util_cap_in_path_metrics,
         )
-        by_pair_state: Dict[str, Dict] = {}
-        for pair in pair_list:
-            per_pair: Dict[str, Dict] = {}
-            for path_idx, keys in enumerate(pair_path_link_idx[pair]):
-                per_pair[f"path_{path_idx}"] = path_metrics_from_link_indices(keys, lm)
-            by_pair_state[f"pair_{int(pair[0])}_{int(pair[1])}"] = per_pair
+        return h, link_metrics_to_arrays(lm)
 
-        hour_state: Dict[str, Dict] = {"by_pair": by_pair_state}
-        sel_key = f"pair_{src_as}_{dst_as}"
-        sel_block = by_pair_state.get(sel_key, {})
-        for k, v in sel_block.items():
-            hour_state[k] = v
-        link_states[h] = hour_state
+    if use_parallel:
+        from joblib import Parallel, delayed
 
-    with open(run_path / "link_states.pkl", "wb") as f:
-        pickle.dump(link_states, f)
-    print(f"Wrote {run_path / 'link_states.pkl'}")
+        chunk = max(24, total_hours // n_jobs)
+        print(f"  Parallel link metrics (n_jobs={n_jobs}, chunk={chunk}h)...")
+        for start in range(0, total_hours, chunk):
+            end = min(total_hours, start + chunk)
+            for hour, arrays in Parallel(n_jobs=n_jobs, backend="threading")(
+                delayed(_build_hour_arrays)(h) for h in range(start, end)
+            ):
+                hourly_arrays[hour] = arrays
+    else:
+        if len(pair_list) > 3000 and n_jobs > 1:
+            print(
+                f"  Sequential link metrics ({len(pair_list)} pairs; "
+                "parallel disabled to limit memory)."
+            )
+        for h in tqdm(range(total_hours), desc="link_states", ncols=80):
+            hour, arrays = _build_hour_arrays(h)
+            hourly_arrays[hour] = arrays
+
+    link_state = LinkTrafficState(link_keys=link_keys_ordered, hours=hourly_arrays)
+    save_link_traffic_state(run_path / "link_states.pkl", link_state)
+    print(f"Wrote {run_path / 'link_states.pkl'} (compact link_hourly_v1)")
 
     if cfg.write_link_states_json:
         with open(run_path / "link_states.json", "w") as f:
@@ -370,10 +391,10 @@ def simulate_link_traffic(
     sample_pairs = pair_list[: min(64, len(pair_list))]
     zero_ph = total_ph = 0
     for h in eval_hours[:: max(1, len(eval_hours) // 48)]:
-        block = link_states[h].get("by_pair", {})
         for pair in sample_pairs:
-            key = f"pair_{pair[0]}_{pair[1]}"
-            per = block.get(key, {})
+            per = link_state.path_metrics_block(
+                h, int(pair[0]), int(pair[1]), pair_path_link_idx
+            )
             if not per:
                 continue
             bws = [float(v.get("available_bandwidth_mbps", 0)) for v in per.values()]

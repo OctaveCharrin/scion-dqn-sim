@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
+from src.simulation.link_state_store import (
+    build_pair_path_link_idx_for_pool,
+    load_link_traffic_state,
+)
+from src.simulation.path_store import InMemoryPathStore
 from src.simulation.run_context import topology_dir
 
 
@@ -26,6 +30,7 @@ def analyze_traffic_run(
     """Build a congestion / path-quality report from ``link_states.pkl``.
 
     Reads ``simulation_metadata.json`` when present for calibration context.
+  Works with compact ``link_hourly_v1`` and legacy per-pair embedded states.
     """
     run_path = Path(run_path)
     meta_path = run_path / "simulation_metadata.json"
@@ -33,8 +38,8 @@ def analyze_traffic_run(
     if meta_path.is_file():
         meta = json.loads(meta_path.read_text())
 
-    with open(run_path / "link_states.pkl", "rb") as f:
-        link_states = pickle.load(f)
+    link_state = load_link_traffic_state(run_path / "link_states.pkl")
+    path_store = InMemoryPathStore.load(run_path / "path_store.json")
 
     with open(run_path / "selected_pair.json") as f:
         selected = json.load(f)
@@ -49,7 +54,7 @@ def analyze_traffic_run(
         ]
     eval_pairs = pair_pool[: min(len(pair_pool), eval_pair_limit)]
 
-    hours = sorted(link_states.keys())
+    hours = link_state.hour_keys()
     if not hours:
         raise ValueError("link_states.pkl is empty")
 
@@ -57,7 +62,14 @@ def analyze_traffic_run(
     eval_hours = [h for h in hours if h >= train_end]
     peak_hours = [h for h in hours if (h % 24) == _peak_diurnal_hour()]
 
-    # Path-level stats on a subset of pairs (full pool can be huge).
+    pair_path_link_idx = {}
+    if not link_state.is_legacy:
+        pair_path_link_idx = build_pair_path_link_idx_for_pool(
+            path_store,
+            pair_pool,
+            link_state.link_key_to_index,
+        )
+
     rng = np.random.default_rng(0)
     if len(pair_pool) > sample_pairs_for_path_stats:
         idx = rng.choice(len(pair_pool), sample_pairs_for_path_stats, replace=False)
@@ -71,111 +83,92 @@ def analyze_traffic_run(
     path_utils_raw: List[float] = []
 
     for h in eval_hours:
-        block = link_states[h].get("by_pair", {})
         for pair in sample_pairs:
-            key = f"pair_{pair[0]}_{pair[1]}"
-            per_pair = block.get(key, {})
+            per_pair = link_state.path_metrics_block(
+                h, int(pair[0]), int(pair[1]), pair_path_link_idx
+            )
             if not per_pair:
                 continue
             bws = [
-                float(v.get("available_bandwidth_mbps", 0.0))
-                for v in per_pair.values()
+                float(v.get("available_bandwidth_mbps", 0.0)) for v in per_pair.values()
             ]
+            utils = [float(v.get("utilization_raw", 0.0)) for v in per_pair.values()]
             if not bws:
                 continue
             total_ph += 1
-            mx = max(bws)
-            max_bws.append(mx)
-            if mx <= 0.001:
+            max_bws.append(max(bws))
+            path_utils_raw.extend(utils)
+            if max(bws) <= 0.001:
                 zero_bw += 1
-            for v in per_pair.values():
-                ur = v.get("utilization_raw")
-                if ur is not None:
-                    path_utils_raw.append(float(ur))
 
-    link_diag = meta.get("link_utilization", {})
-    calibration = meta.get("traffic_calibration", {})
+    link_utils_peak: List[float] = []
+    if not link_state.is_legacy and peak_hours:
+        for h in peak_hours:
+            lm = link_state.link_metrics_at(h)
+            link_utils_peak.extend(lm.utilization_raw.tolist())
 
     report: Dict[str, Any] = {
         "run_dir": str(run_path),
-        "num_hours": len(hours),
+        "link_state_format": (
+            "legacy_by_pair" if link_state.is_legacy else "link_hourly_v1"
+        ),
+        "num_pairs_in_pool": len(pair_pool),
+        "num_links": len(link_state.link_keys),
+        "hours_total": len(hours),
         "eval_hours": len(eval_hours),
-        "pair_pool_size": len(pair_pool),
-        "sample_pairs_for_path_stats": len(sample_pairs),
-        "path_quality_eval_window": {
-            "pair_hours_sampled": total_ph,
+        "path_quality": {
             "fraction_max_path_bw_zero": float(zero_bw / total_ph) if total_ph else 0.0,
-            "max_path_bw_mean_mbps": float(np.mean(max_bws)) if max_bws else 0.0,
-            "max_path_bw_p50_mbps": float(np.percentile(max_bws, 50)) if max_bws else 0.0,
-            "path_util_raw_p90": float(np.percentile(path_utils_raw, 90))
-            if path_utils_raw
-            else 0.0,
+            "pair_hours_sampled": total_ph,
+            "max_path_bw_mbps": {
+                "mean": float(np.mean(max_bws)) if max_bws else 0.0,
+                "p50": float(np.percentile(max_bws, 50)) if max_bws else 0.0,
+                "p90": float(np.percentile(max_bws, 90)) if max_bws else 0.0,
+            },
+            "path_utilization_raw": {
+                "p90": float(np.percentile(path_utils_raw, 90)) if path_utils_raw else 0.0,
+                "max": float(np.max(path_utils_raw)) if path_utils_raw else 0.0,
+            },
         },
-        "link_utilization_from_simulation": link_diag,
-        "traffic_calibration": calibration,
-        "targets": {
-            "p90_utilization": calibration.get("target_p90_utilization", 0.75),
-            "max_zero_bw_pair_hour_fraction": calibration.get(
-                "target_zero_bw_pair_hour_fraction", 0.20
-            ),
+        "link_utilization_peak_diurnal": {
+            "p90": float(np.percentile(link_utils_peak, 90)) if link_utils_peak else 0.0,
+            "max": float(np.max(link_utils_peak)) if link_utils_peak else 0.0,
         },
-        "eval_pairs_count": len(eval_pairs),
+        "eval_pairs_sample": [list(p) for p in eval_pairs[:8]],
     }
-
-    if link_diag:
-        p90 = float(link_diag.get("util_peak_hour_raw_p90", 0.0))
-        report["calibration_check"] = {
-            "p90_util_in_band_0.6_0.9": 0.6 <= p90 <= 0.9,
-            "zero_bw_fraction_below_0.3": report["path_quality_eval_window"][
-                "fraction_max_path_bw_zero"
-            ]
-            < 0.30,
-        }
-
+    if meta:
+        report["traffic_calibration"] = meta.get("traffic_calibration", meta)
+        report["link_utilization_from_sim"] = meta.get("link_utilization", {})
     return report
 
 
 def format_traffic_report(report: Dict[str, Any]) -> str:
-    """Human-readable summary for CLI / notebooks."""
+    """Human-readable summary for CLI output."""
+    pq = report.get("path_quality", {})
     lines = [
-        f"Traffic inspection: {report.get('run_dir', '')}",
-        f"  Pair pool size: {report.get('pair_pool_size')}",
-        f"  Eval hours: {report.get('eval_hours')}",
+        f"Run: {report.get('run_dir', '?')}",
+        f"Format: {report.get('link_state_format', '?')}",
+        f"Pairs in pool: {report.get('num_pairs_in_pool', '?')}",
+        f"Links: {report.get('num_links', '?')}",
+        f"Hours: {report.get('hours_total', '?')} (eval window: {report.get('eval_hours', '?')})",
+        "",
+        "Path quality (sampled pairs × eval hours):",
+        f"  Zero max-path-BW fraction: {pq.get('fraction_max_path_bw_zero', 0):.1%}",
+        f"  Pair-hours sampled: {pq.get('pair_hours_sampled', 0)}",
     ]
-    pq = report.get("path_quality_eval_window", {})
-    lines.append(
-        f"  Fraction (pair,hour) with max path BW == 0 (sample): "
-        f"{pq.get('fraction_max_path_bw_zero', 0):.1%}"
-    )
-    lines.append(
-        f"  Mean max-path BW (Mbps): {pq.get('max_path_bw_mean_mbps', 0):.1f}"
-    )
-    lu = report.get("link_utilization_from_simulation", {})
-    if lu:
+    mbw = pq.get("max_path_bw_mbps", {})
+    if mbw:
         lines.append(
-            f"  Peak-hour link util raw p90: {lu.get('util_peak_hour_raw_p90', 0):.3f}"
+            f"  Max path BW (Mbps): mean={mbw.get('mean', 0):.1f} "
+            f"p50={mbw.get('p50', 0):.1f} p90={mbw.get('p90', 0):.1f}"
         )
-        lines.append(
-            f"  Peak-hour link util raw max: {lu.get('util_peak_hour_raw_max', 0):.3f}"
-        )
-        lines.append(
-            f"  Fraction links util>1 (any hour): {lu.get('fraction_links_util_gt_1', 0):.1%}"
-        )
-    cal = report.get("calibration_check")
-    if cal:
-        lines.append(f"  Calibration p90 in [0.6,0.9]: {cal.get('p90_util_in_band_0.6_0.9')}")
-        lines.append(
-            f"  Zero-BW fraction < 30%: {cal.get('zero_bw_fraction_below_0.3')}"
-        )
-    tc = report.get("traffic_calibration", {})
-    if tc:
-        lines.append(
-            f"  Active pairs/hour: {tc.get('active_pairs_min')}–{tc.get('active_pairs_max')}"
-        )
-        lines.append(
-            f"  Scaled base rate (Mbps): {tc.get('scaled_base_rate_mbps', 0):.2f}"
-        )
-        lines.append(
-            f"  Background pairs/hour: {tc.get('background_pairs_per_hour_typical')}"
+    util = report.get("link_utilization_from_sim", {})
+    if util:
+        lines.extend(
+            [
+                "",
+                "Link utilization (from simulation_metadata):",
+                f"  Peak-hour raw p90: {util.get('util_peak_hour_raw_p90', 0):.3f}",
+                f"  Peak-hour raw max: {util.get('util_peak_hour_raw_max', 0):.3f}",
+            ]
         )
     return "\n".join(lines)

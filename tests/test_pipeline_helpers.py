@@ -55,11 +55,7 @@ def test_pipeline_steps_from():
     assert full[-1] == "06_generate_figures.py"
     from_four = run_dirs.pipeline_steps_from(4)
     assert from_four == [
-        "04_train_dqn.py",
-        "04_train_simple_dqn.py",
-        "04_train_scoring_dqn.py",
-        "04_train_scoring_enhanced_dqn.py",
-        "04_train_conditional_dqn.py",
+        "04_train_all_models.py",
         "05_evaluate_methods.py",
         "eval_multi_reward_comparison.py",
         "06_generate_figures.py",
