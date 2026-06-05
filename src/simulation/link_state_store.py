@@ -125,6 +125,20 @@ def load_link_traffic_state(path: Path) -> LinkTrafficState:
     raise TypeError(f"Unsupported link_states.pkl type: {type(data)}")
 
 
+def link_state_to_json_dict(state: LinkTrafficState) -> Dict[str, Any]:
+    """JSON-serializable view of traffic state (arrays as lists)."""
+    if state.is_legacy and state.legacy_by_hour is not None:
+        return state.legacy_by_hour
+    return {
+        "format": LINK_STATE_FORMAT,
+        "link_keys": [[int(a), int(b)] for a, b in state.link_keys],
+        "hours": {
+            int(h): {k: np.asarray(v).tolist() for k, v in arrays.items()}
+            for h, arrays in state.hours.items()
+        },
+    }
+
+
 def save_link_traffic_state(path: Path, state: LinkTrafficState) -> None:
     if state.legacy_by_hour is not None:
         payload: Any = state.legacy_by_hour

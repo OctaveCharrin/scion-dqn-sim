@@ -14,16 +14,27 @@ import torch
 from tqdm import tqdm
 
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
+from src.rl.dqn_agent_scoring_conditional import (
+    CONDITIONAL_ARCH_WEIGHT_FILM,
+    ConditionalPathScoringDQNAgent,
+)
 from src.rl.dqn_agent_scoring_enhanced import EnhancedPathScoringDQNAgent
 from src.rl.dqn_agent_scoring_simple import SimplePathScoringDQNAgent
 from src.rl.dqn_agent_simple import SimpleDQNAgent
-from src.rl.reward_profiles import REWARD_PROFILES
+from src.rl.reward_profiles import (
+    conditional_episode_multiplier,
+    get_conditional_training_profiles,
+    stratified_training_profile_schedule,
+)
 from src.simulation.evaluation_env import (
     CONDITIONAL_SCORING_GLOBAL_DIM,
     FLAT_GLOBAL_DIM,
     PATH_FEATURE_DIM,
+    REWARD_WEIGHT_DIM,
     SCORING_GLOBAL_DIM,
     RewardWeights,
+    get_conditional_weight_encoding,
+    set_conditional_weight_encoding,
 )
 from src.simulation.run_context import compute_action_dim, load_run_context, make_env
 
@@ -479,13 +490,15 @@ def train_conditional_scoring_dqn(
         use_double_dqn=True,
         tau=hp.tau,
     )
-    agent = EnhancedPathScoringDQNAgent(
+    set_conditional_weight_encoding("policy")
+    agent = ConditionalPathScoringDQNAgent(
         global_dim=CONDITIONAL_SCORING_GLOBAL_DIM,
         path_dim=PATH_FEATURE_DIM,
         config=config,
     )
 
-    n_episodes = num_episodes or _target_episodes(len(pair_pool), episode_length)
+    base_episodes = num_episodes or _target_episodes(len(pair_pool), episode_length)
+    n_episodes = max(50, int(base_episodes * conditional_episode_multiplier()))
     grad_every = _gradient_every()
     pair_rng = random.Random(pair_rng_seed)
     hour_rng = random.Random(hour_rng_seed)
@@ -496,13 +509,15 @@ def train_conditional_scoring_dqn(
     losses: List[float] = []
     total_steps = 0
 
-    profile_list = REWARD_PROFILES
-    ep_iter = range(n_episodes)
+    profile_list = get_conditional_training_profiles()
+    profile_schedule = stratified_training_profile_schedule(
+        n_episodes, profile_list, weight_rng
+    )
+    ep_iter = enumerate(profile_schedule)
     if not quiet:
-        ep_iter = tqdm(ep_iter, desc="train_conditional_scoring")
+        ep_iter = tqdm(ep_iter, total=n_episodes, desc="train_conditional_scoring")
 
-    for _ep in ep_iter:
-        sampled = weight_rng.choice(profile_list)
+    for _ep, sampled in ep_iter:
         env.reward_weights = sampled.weights
         episode_weight_names.append(sampled.name)
 
@@ -539,6 +554,8 @@ def train_conditional_scoring_dqn(
     ckpt = checkpoint_path or (run_path / "dqn_conditional_scoring_model.pth")
     payload: Dict[str, Any] = {
         "model_type": "conditional_scoring_dqn",
+        "architecture": CONDITIONAL_ARCH_WEIGHT_FILM,
+        "weight_encoding": get_conditional_weight_encoding(),
         "q_network": agent.q_network.state_dict(),
         "target_network": agent.target_network.state_dict(),
         "epsilon": agent.epsilon,
@@ -547,6 +564,7 @@ def train_conditional_scoring_dqn(
         "global_dim": CONDITIONAL_SCORING_GLOBAL_DIM,
         "path_dim": PATH_FEATURE_DIM,
         "scoring_global_dim": SCORING_GLOBAL_DIM,
+        "weight_dim": REWARD_WEIGHT_DIM,
         "hyperparams": asdict(hp),
         "goodput_cap_mbps": goodput_cap,
         "training_profiles": [p.to_dict() for p in profile_list],
@@ -560,7 +578,10 @@ def train_conditional_scoring_dqn(
 
     stats = {
         "model_type": "conditional_scoring_dqn",
+        "architecture": CONDITIONAL_ARCH_WEIGHT_FILM,
+        "weight_encoding": get_conditional_weight_encoding(),
         "num_episodes": n_episodes,
+        "base_episodes_before_multiplier": base_episodes,
         "episode_length_hours": episode_length,
         "episode_rewards": episode_rewards,
         "episode_probes": episode_probes,

@@ -25,7 +25,7 @@ from src.simulation.evaluation_env import (
     SCORING_GLOBAL_DIM,
     RewardWeights,
 )
-from src.rl.dqn_agent_scoring_conditional import ConditionalPathScoringDQNAgent
+from src.rl.dqn_agent_scoring_conditional import load_conditional_scoring_agent
 from src.simulation.run_context import (
     compute_action_dim,
     load_run_context,
@@ -86,7 +86,7 @@ dqn_agent: Optional[EnhancedDQNAgent] = None
 simple_dqn_agent: Optional[SimpleDQNAgent] = None
 scoring_simple_dqn_agent: Optional[SimplePathScoringDQNAgent] = None
 scoring_enhanced_dqn_agent: Optional[EnhancedPathScoringDQNAgent] = None
-conditional_dqn_agent: Optional[ConditionalPathScoringDQNAgent] = None
+conditional_dqn_agent: Optional[EnhancedPathScoringDQNAgent] = None
 
 _model_path = run_path / "dqn_model.pth"
 if _model_path.is_file():
@@ -151,16 +151,7 @@ if _enh_ckpt:
 _cond_path = run_path / "dqn_conditional_scoring_model.pth"
 _cond_ckpt = _load_checkpoint(_cond_path)
 if _cond_ckpt:
-    _cond_cfg = _cond_ckpt.get("config") or EnhancedDQNConfig()
-    conditional_dqn_agent = ConditionalPathScoringDQNAgent(
-        global_dim=int(_cond_ckpt.get("global_dim", CONDITIONAL_SCORING_GLOBAL_DIM)),
-        path_dim=int(_cond_ckpt.get("path_dim", PATH_FEATURE_DIM)),
-        config=_cond_cfg,
-    )
-    conditional_dqn_agent.q_network.load_state_dict(_cond_ckpt["q_network"])
-    if "target_network" in _cond_ckpt:
-        conditional_dqn_agent.target_network.load_state_dict(_cond_ckpt["target_network"])
-    conditional_dqn_agent.epsilon = 0.0
+    conditional_dqn_agent = load_conditional_scoring_agent(_cond_ckpt)
 
 env.reward_weights = reward_weights
 

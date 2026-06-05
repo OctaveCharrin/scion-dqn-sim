@@ -13,14 +13,12 @@ import torch
 from tqdm import tqdm
 
 from src.pipeline.run_dirs import resolve_run_dir
-from src.rl.dqn_agent_enhanced import EnhancedDQNConfig
-from src.rl.dqn_agent_scoring_conditional import ConditionalPathScoringDQNAgent
-from src.rl.reward_profiles import REWARD_PROFILES, RewardProfile
-from src.simulation.evaluation_env import (
-    CONDITIONAL_SCORING_GLOBAL_DIM,
-    PATH_FEATURE_DIM,
-    RewardWeights,
+from src.rl.dqn_agent_scoring_conditional import (
+    ConditionalPathScoringDQNAgent,
+    load_conditional_scoring_agent,
 )
+from src.rl.reward_profiles import REWARD_PROFILES, RewardProfile
+from src.simulation.evaluation_env import RewardWeights
 from src.simulation.run_context import load_run_context, make_env
 
 EVAL_HOURS = list(range(14 * 24, 28 * 24))
@@ -37,17 +35,7 @@ def _load_agent(run_path: Path) -> ConditionalPathScoringDQNAgent:
     except TypeError:
         ckpt = torch.load(ckpt_path, map_location="cpu")
 
-    cfg = ckpt.get("config") or EnhancedDQNConfig()
-    agent = ConditionalPathScoringDQNAgent(
-        global_dim=int(ckpt.get("global_dim", CONDITIONAL_SCORING_GLOBAL_DIM)),
-        path_dim=int(ckpt.get("path_dim", PATH_FEATURE_DIM)),
-        config=cfg,
-    )
-    agent.q_network.load_state_dict(ckpt["q_network"])
-    if "target_network" in ckpt:
-        agent.target_network.load_state_dict(ckpt["target_network"])
-    agent.epsilon = 0.0
-    return agent
+    return load_conditional_scoring_agent(ckpt)
 
 
 def _eval_profile(

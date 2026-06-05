@@ -13,11 +13,15 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from src.baselines.ecmp import ECMPSelector
 from src.baselines.lowest_latency import LowestLatencySelector
+from src.baselines.random_selection import RandomSelector
+from src.baselines.scion_default import SCIONDefaultSelector
+from src.baselines.shortest_path import ShortestPathSelector
 from src.baselines.widest_path import WidestPathSelector
 from src.pipeline.run_dirs import resolve_run_dir
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
-from src.rl.dqn_agent_scoring_conditional import ConditionalPathScoringDQNAgent
+from src.rl.dqn_agent_scoring_conditional import load_conditional_scoring_agent
 from src.rl.dqn_agent_scoring_enhanced import EnhancedPathScoringDQNAgent
 from src.rl.dqn_agent_scoring_simple import SimplePathScoringDQNAgent
 from src.rl.dqn_agent_simple import SimpleDQNAgent
@@ -34,6 +38,33 @@ from src.simulation.run_context import compute_action_dim, load_run_context, mak
 EVAL_HOURS = list(range(14 * 24, 28 * 24))
 MAX_EVAL_PAIRS = 32
 
+# Baselines that probe bandwidth on every path (aligned with 05_evaluate_methods.py).
+_FULL_PROBE_BASELINES = frozenset({"widest_path", "ecmp"})
+_BASELINE_METHODS = frozenset(
+    {
+        "shortest_path",
+        "widest_path",
+        "lowest_latency",
+        "ecmp",
+        "random",
+        "scion_default",
+    }
+)
+
+_METHOD_ORDER = (
+    "conditional_dqn",
+    "scoring_enhanced_dqn",
+    "scoring_simple_dqn",
+    "dqn",
+    "simple_dqn",
+    "shortest_path",
+    "widest_path",
+    "lowest_latency",
+    "ecmp",
+    "random",
+    "scion_default",
+)
+
 
 def _load_checkpoint(path: Path) -> Optional[dict]:
     if not path.is_file():
@@ -49,14 +80,7 @@ def _load_agents(run_path: Path, action_dim: int) -> Dict[str, Any]:
 
     ckpt = _load_checkpoint(run_path / "dqn_conditional_scoring_model.pth")
     if ckpt:
-        cfg = ckpt.get("config") or EnhancedDQNConfig()
-        agent = ConditionalPathScoringDQNAgent(
-            global_dim=int(ckpt.get("global_dim", CONDITIONAL_SCORING_GLOBAL_DIM)),
-            path_dim=int(ckpt.get("path_dim", PATH_FEATURE_DIM)),
-            config=cfg,
-        )
-        agent.q_network.load_state_dict(ckpt["q_network"])
-        agent.epsilon = 0.0
+        agent = load_conditional_scoring_agent(ckpt)
         agents["conditional_dqn"] = agent
 
     ckpt = _load_checkpoint(run_path / "dqn_scoring_enhanced_model.pth")
@@ -102,9 +126,52 @@ def _load_agents(run_path: Path, action_dim: int) -> Dict[str, Any]:
         agent.epsilon = 0.0
         agents["simple_dqn"] = agent
 
+    agents["shortest_path"] = ShortestPathSelector()
     agents["widest_path"] = WidestPathSelector()
     agents["lowest_latency"] = LowestLatencySelector()
+    agents["ecmp"] = ECMPSelector()
+    agents["random"] = RandomSelector()
+    agents["scion_default"] = SCIONDefaultSelector()
     return agents
+
+
+def _eval_baseline_selection(
+    env,
+    method: str,
+    agent: Any,
+    pair: Tuple[int, int],
+    n_paths: int,
+) -> Tuple[float, Dict[str, Any]]:
+    """Run one baseline selection (probe all paths, then pick)."""
+    step_probe_cost = 0.0
+    path_metrics_list: List[Dict] = []
+    for path_idx in range(n_paths):
+        if method in _FULL_PROBE_BASELINES:
+            m = env.probe_path_full(path_idx)
+        else:
+            m = env.probe_path_latency(path_idx)
+        step_probe_cost += env.last_probe_cost_ms
+        path_metrics_list.append(m)
+
+    flow_stub = {"src": int(pair[0]), "dst": int(pair[1])}
+    state_stub = np.zeros(1, dtype=np.float32)
+    if method == "random":
+        action = int(np.random.choice(n_paths))
+    else:
+        action = int(
+            agent.select_path(
+                env.available_paths,
+                path_metrics_list,
+                flow_stub,
+                state_stub,
+            )
+        )
+    _obs, reward, _done, info = env.step(
+        action,
+        step_probe_cost_ms=step_probe_cost,
+        num_probes_in_step=n_paths,
+    )
+    return float(reward), info
 
 
 def _eval_method_profile(
@@ -131,31 +198,9 @@ def _eval_method_profile(
             if n_paths == 0:
                 continue
 
-            step_probe_cost = 0.0
-            if method in ("widest_path", "lowest_latency"):
-                path_metrics_list: List[Dict] = []
-                n_probes = 0
-                for path_idx in range(n_paths):
-                    if method == "widest_path":
-                        m = env.probe_path_full(path_idx)
-                    else:
-                        m = env.probe_path_latency(path_idx)
-                    step_probe_cost += env.last_probe_cost_ms
-                    n_probes += 1
-                    path_metrics_list.append(m)
-                flow_stub = {"src": int(pair[0]), "dst": int(pair[1])}
-                action = int(
-                    agent.select_path(
-                        env.available_paths,
-                        path_metrics_list,
-                        flow_stub,
-                        np.zeros(1, dtype=np.float32),
-                    )
-                )
-                _, reward, _, info = env.step(
-                    action,
-                    step_probe_cost_ms=step_probe_cost,
-                    num_probes_in_step=n_probes,
+            if method in _BASELINE_METHODS:
+                reward, info = _eval_baseline_selection(
+                    env, method, agent, pair, n_paths
                 )
             elif method == "conditional_dqn":
                 state = env.observe_scoring_conditional()
@@ -264,19 +309,7 @@ def main() -> None:
     if not agents:
         raise FileNotFoundError(f"No model checkpoints found under {run_path}")
 
-    method_order = [
-        m
-        for m in (
-            "conditional_dqn",
-            "scoring_enhanced_dqn",
-            "scoring_simple_dqn",
-            "dqn",
-            "simple_dqn",
-            "widest_path",
-            "lowest_latency",
-        )
-        if m in agents
-    ]
+    method_order = [m for m in _METHOD_ORDER if m in agents]
 
     env = make_env(
         topology_data,

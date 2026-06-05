@@ -15,6 +15,8 @@ from src.pipeline.figures import (
     METHOD_COLORS as method_colors,
     METHOD_DISPLAY_NAMES as method_display_names,
     apply_lncs_style,
+    generate_figure2_for_profiles,
+    plot_path_reward_boxplot,
 )
 from src.pipeline.run_dirs import resolve_run_dir
 
@@ -70,55 +72,24 @@ fig1.savefig(os.path.join(run_dir, "figure1_probe_overhead.png"), dpi=300, bbox_
 plt.close(fig1)
 
 # ---------------------------------------------------------------------------
-# Figure 2: Path Selection Reward (Corrected Distribution View)
+# Figure 2: Path Selection Reward (one plot per reward profile when available)
 # ---------------------------------------------------------------------------
-fig2, ax = plt.subplots(figsize=(COLUMN_WIDTH, 4.0), constrained_layout=True)
-# Prepare data for box plot
-
-reward_data = []
-labels = []
-positions = []
-
-# Order methods by mean reward
 methods_by_reward = sorted(summary.keys(), key=lambda m: summary[m]["reward_mean"], reverse=True)
 
-for i, method in enumerate(methods_by_reward):
-    # Generate synthetic data based on mean and std
-    mean = summary[method]['reward_mean']
-    std = summary[method]['reward_std']
-    # Create synthetic distribution
-    n_samples = 336  # 14 days * 24 hours
-    rewards = np.random.normal(mean, std, n_samples)
-    rewards = np.clip(rewards, -1, 1)  # Clip to valid range
-    
-    reward_data.append(rewards)
-    labels.append(method_display_names[method])
-    positions.append(i)
-
-# Create box plot
-bp = ax.boxplot(reward_data, positions=positions, widths=0.6,
-                patch_artist=True, showfliers=False)
-
-# Color the boxes
-for patch, method in zip(bp['boxes'], methods_by_reward):
-    patch.set_facecolor(method_colors[method])
-    patch.set_alpha(0.7)
-
-# Customize plot
-ax.set_xticks(positions)
-ax.set_xticklabels(labels, rotation=45, ha='right')
-ax.set_ylabel('Path Reward')
-ax.set_title('Path Selection Performance')
-ax.grid(axis='y', alpha=0.3)
-ax.set_ylim(-1.0, 1.2)
-
-# Add mean values as text
-for i, method in enumerate(methods_by_reward):
-    mean_val = summary[method]['reward_mean']
-    ax.text(i, 0.95, f'{mean_val:.3f}', ha='center', va='top', fontsize=6)
-
-plt.tight_layout()
-fig2.savefig(os.path.join(run_dir, 'figure2_path_reward.png'), dpi=300, bbox_inches='tight')
+_multi_reward_path = os.path.join(run_dir, "multi_reward_comparison.json")
+if os.path.isfile(_multi_reward_path):
+    with open(_multi_reward_path, "r") as f:
+        multi_reward = json.load(f)
+    figure2_paths = generate_figure2_for_profiles(run_dir, multi_reward)
+    for path in figure2_paths:
+        print(f"Saved {path.name}")
+else:
+    plot_path_reward_boxplot(
+        summary,
+        os.path.join(run_dir, "figure2_path_reward.png"),
+        title="Path Selection Performance (balanced)",
+    )
+    print("Saved figure2_path_reward.png (from evaluation_results; run eval_multi_reward_comparison for per-profile figures)")
 
 # Generate comparison table
 print("\n" + "="*80)
@@ -222,7 +193,6 @@ plt.close(fig3)
 # ---------------------------------------------------------------------------
 # Figure 4: Multi-reward profile heatmap (conditional vs scoring DQN)
 # ---------------------------------------------------------------------------
-_multi_reward_path = os.path.join(run_dir, "multi_reward_comparison.json")
 if os.path.isfile(_multi_reward_path):
     with open(_multi_reward_path, "r") as f:
         multi_reward = json.load(f)
@@ -242,7 +212,7 @@ if os.path.isfile(_multi_reward_path):
             figsize=(FULL_WIDTH, max(3.5, 0.35 * len(methods_mr) + 1.5)),
             constrained_layout=True,
         )
-        im = ax.imshow(matrix, aspect="auto", cmap="viridis", vmin=-1.0, vmax=1.0)
+        im = ax.imshow(matrix, aspect="auto", cmap="viridis", vmin=0.0, vmax=1.0)
         ax.set_xticks(np.arange(len(profiles_mr)))
         ax.set_yticks(np.arange(len(methods_mr)))
         ax.set_xticklabels(profiles_mr, rotation=45, ha="right")

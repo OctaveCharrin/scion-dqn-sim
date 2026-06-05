@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import random
 from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Sequence
@@ -59,6 +60,40 @@ REWARD_PROFILES: List[RewardProfile] = [
     ),
 ]
 
+# Sharper extremes for conditional training (eval still uses REWARD_PROFILES).
+DISTINCTIVE_REWARD_PROFILES: List[RewardProfile] = [
+    RewardProfile(
+        "bandwidth_max",
+        RewardWeights(w1=1.0, w2=0.0, w3=0.05, w4=0.05, w_probe=0.05),
+        "Pure goodput; ignore trust composition.",
+    ),
+    RewardProfile(
+        "loss_averse",
+        RewardWeights(w1=0.05, w2=0.95, w3=1.0, w4=0.15, w_probe=0.05),
+        "Trust dominated by loss avoidance.",
+    ),
+    RewardProfile(
+        "delay_averse",
+        RewardWeights(w1=0.1, w2=0.9, w3=0.15, w4=1.0, w_probe=0.05),
+        "Trust dominated by latency penalty.",
+    ),
+    RewardProfile(
+        "balanced_extreme",
+        RewardWeights(w1=0.55, w2=0.45, w3=0.55, w4=0.55, w_probe=0.05),
+        "Midpoint anchor between bandwidth- and trust-heavy poles.",
+    ),
+    RewardProfile(
+        "probe_minimal",
+        RewardWeights(w1=0.7, w2=0.3, w3=0.5, w4=0.5, w_probe=0.001),
+        "Almost no probe penalty (explore paths freely).",
+    ),
+    RewardProfile(
+        "probe_averse",
+        RewardWeights(w1=0.7, w2=0.3, w3=0.5, w4=0.5, w_probe=0.35),
+        "Heavy probe penalty (prefer fewer / cheaper probes).",
+    ),
+]
+
 _PROFILE_BY_NAME: Dict[str, RewardProfile] = {p.name: p for p in REWARD_PROFILES}
 
 
@@ -76,6 +111,42 @@ def sample_training_weights(
     """Pick a profile uniformly (per episode) for contextual training."""
     pool = list(profiles) if profiles is not None else REWARD_PROFILES
     return rng.choice(pool).weights
+
+
+def get_conditional_training_profiles() -> List[RewardProfile]:
+    """Profiles used by ``train_conditional_scoring_dqn`` (env ``DQN_CONDITIONAL_PROFILES``)."""
+    mode = os.environ.get("DQN_CONDITIONAL_PROFILES", "distinctive").strip().lower()
+    if mode in ("legacy", "eval", "standard"):
+        return list(REWARD_PROFILES)
+    if mode == "all":
+        merged: Dict[str, RewardProfile] = {p.name: p for p in REWARD_PROFILES}
+        for p in DISTINCTIVE_REWARD_PROFILES:
+            merged[p.name] = p
+        return list(merged.values())
+    return list(DISTINCTIVE_REWARD_PROFILES)
+
+
+def stratified_training_profile_schedule(
+    n_episodes: int,
+    profiles: Sequence[RewardProfile],
+    rng: random.Random,
+) -> List[RewardProfile]:
+    """Equal per-profile episode counts with shuffled order (reduces sampling noise)."""
+    if not profiles:
+        raise ValueError("profiles must be non-empty")
+    pool = list(profiles)
+    reps = (n_episodes + len(pool) - 1) // len(pool)
+    schedule = (pool * reps)[:n_episodes]
+    rng.shuffle(schedule)
+    return schedule
+
+
+def conditional_episode_multiplier() -> float:
+    raw = os.environ.get("DQN_CONDITIONAL_EPISODE_MULT", "1.25").strip()
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return 1.25
 
 
 def profile_names(profiles: Optional[Sequence[RewardProfile]] = None) -> List[str]:

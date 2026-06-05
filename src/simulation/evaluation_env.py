@@ -69,12 +69,53 @@ DEFAULT_REWARD_WEIGHTS = RewardWeights().to_dict()
 def encode_reward_weights(
     weights: Optional[Union[RewardWeights, Mapping[str, float]]] = None,
 ) -> np.ndarray:
-    """Fixed-size encoding of reward weights for conditional policies (dim 5)."""
+    """Raw weight vector (dim 5); kept for backward-compatible checkpoints."""
     w = weights if isinstance(weights, RewardWeights) else RewardWeights.from_mapping(weights)
     return np.array(
         [w.w1, w.w2, w.w3, w.w4, w.w_probe],
         dtype=np.float32,
     )
+
+
+def encode_reward_weights_policy(
+    weights: Optional[Union[RewardWeights, Mapping[str, float]]] = None,
+) -> np.ndarray:
+    """Scaled contrasts so w_probe and w1–w4 sit in a similar numeric range for the policy."""
+    w = weights if isinstance(weights, RewardWeights) else RewardWeights.from_mapping(weights)
+    return np.array(
+        [
+            2.0 * w.w1 - 1.0,
+            2.0 * w.w2 - 1.0,
+            2.0 * w.w3 - 1.0,
+            2.0 * w.w4 - 1.0,
+            min(1.0, float(w.w_probe) * 12.0),
+        ],
+        dtype=np.float32,
+    )
+
+
+_CONDITIONAL_WEIGHT_ENCODING = "policy"
+
+
+def set_conditional_weight_encoding(mode: str) -> None:
+    """``raw`` or ``policy`` — must match how the conditional checkpoint was trained."""
+    global _CONDITIONAL_WEIGHT_ENCODING
+    m = str(mode).strip().lower()
+    if m not in ("raw", "policy"):
+        raise ValueError(f"weight encoding must be 'raw' or 'policy', got {mode!r}")
+    _CONDITIONAL_WEIGHT_ENCODING = m
+
+
+def get_conditional_weight_encoding() -> str:
+    return _CONDITIONAL_WEIGHT_ENCODING
+
+
+def encode_reward_weights_for_conditional(
+    weights: Optional[Union[RewardWeights, Mapping[str, float]]] = None,
+) -> np.ndarray:
+    if _CONDITIONAL_WEIGHT_ENCODING == "raw":
+        return encode_reward_weights(weights)
+    return encode_reward_weights_policy(weights)
 
 
 def reward_from_path_metrics(
@@ -358,9 +399,9 @@ class EvaluationPathSelectionEnv:
         return {"global": self.observe_scoring_global(), "paths": rows}
 
     def observe_scoring_conditional(self) -> Dict[str, np.ndarray]:
-        """Scoring observation with ``encode_reward_weights`` appended to ``global``."""
+        """Scoring observation with reward-weight encoding appended to ``global``."""
         obs = self.observe_scoring()
-        wvec = encode_reward_weights(self.reward_weights)
+        wvec = encode_reward_weights_for_conditional(self.reward_weights)
         obs["global"] = np.concatenate([obs["global"], wvec]).astype(np.float32)
         return obs
 

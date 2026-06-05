@@ -23,6 +23,7 @@ from src.simulation.link_state_store import (
     LinkTrafficState,
     build_pair_path_link_idx_for_pool,
     link_metrics_to_arrays,
+    link_state_to_json_dict,
     save_link_traffic_state,
 )
 from src.simulation.traffic_metrics import (
@@ -379,7 +380,7 @@ def simulate_link_traffic(
 
     if cfg.write_link_states_json:
         with open(run_path / "link_states.json", "w") as f:
-            json.dump(link_states, f)
+            json.dump(link_state_to_json_dict(link_state), f)
         print(f"Wrote {run_path / 'link_states.json'}")
 
     util_summary = summarize_link_loads(

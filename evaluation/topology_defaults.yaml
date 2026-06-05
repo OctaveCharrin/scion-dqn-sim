@@ -16,7 +16,7 @@ brite:
 
   # Numeric model parameters passed to BRITEConfigGenerator.generate when external_config_path is null.
   java_model:
-    n_nodes: 100
+    n_nodes: 50
     model_name: 10
     hs: 1000
     ls: 100
@@ -29,7 +29,7 @@ brite:
     q: 0.2
 
   scion_converter:
-    n_isds: 3
+    n_isds: 2
     core_ratio: 0.075
 
   convert:
