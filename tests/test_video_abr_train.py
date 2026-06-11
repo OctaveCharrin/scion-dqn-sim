@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from src.baselines.abr_baselines import ABR_SELECTORS
+from src.baselines.abr_baselines import ABR_JOINT_SELECTORS, ABR_SELECTORS
 from src.rl.video_abr_train import run_comparison
 
 
@@ -30,3 +30,19 @@ def test_abr_run_comparison_structure_and_output(tmp_path):
     assert out.exists()
     with open(out) as f:
         json.load(f)
+
+
+def test_abr_joint_run_comparison(tmp_path):
+    results = run_comparison(
+        backend="mock",
+        mode="joint",
+        num_episodes=3,
+        eval_episodes=2,
+        seed=0,
+        quiet=True,
+    )
+    assert results["mode"] == "joint"
+    assert set(results["methods"]) == {"dqn", *ABR_JOINT_SELECTORS}
+    for m in results["methods"].values():
+        assert isinstance(m["mean_reward"], float)
+        assert isinstance(m["mean_vmaf"], float)

@@ -24,18 +24,19 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 import torch
 
-from src.baselines.abr_baselines import ABR_SELECTORS
+from src.baselines.abr_baselines import ABR_JOINT_SELECTORS, ABR_SELECTORS
 from src.ns3env.abr import QoEWeights
 from src.ns3env.abr_env import VideoAbrEnv
+from src.ns3env.abr_joint_env import VideoMultipathAbrEnv
 from src.ns3env.dataplane import DataPlane, MockTraceConfig, MockTraceDataPlane
 from src.rl.dqn_agent_enhanced import EnhancedDQNConfig
 from src.rl.dqn_agent_scoring_enhanced import EnhancedPathScoringDQNAgent
 from src.rl.video_mpquic_train import VideoTrainHyperparams
 
-EnvFactory = Callable[[], VideoAbrEnv]
+EnvFactory = Callable[[], Any]
 
-# Mock scenarios: ``varying`` gives a single path whose capacity swings widely, so
-# a fixed bitrate either stalls (too high) or wastes quality (too low) and an
+# Single-path scenarios: ``varying`` gives one path whose capacity swings widely,
+# so a fixed bitrate either stalls (too high) or wastes quality (too low) and an
 # adaptive policy wins. ``default`` is the gentler Phase-1 path-0 profile.
 _SCENARIOS: Dict[str, MockTraceConfig] = {
     "default": MockTraceConfig(num_paths=1),
@@ -49,23 +50,42 @@ _SCENARIOS: Dict[str, MockTraceConfig] = {
     ),
 }
 
+# Joint (multipath) scenarios: equal-mean, high-amplitude, anti-phase paths so the
+# best path rotates over time *and* the achievable bitrate varies -- both the path
+# choice and the quality choice matter.
+_JOINT_SCENARIOS: Dict[str, MockTraceConfig] = {
+    "crossover": MockTraceConfig(
+        num_paths=3,
+        # Capacity-constrained: a single path's peak (~2.2*1.85 ~= 4.07 Mbps) is
+        # usually below the top rung (4.3), so naive max-bitrate stalls and the
+        # agent must trade quality against rebuffering while tracking the best path.
+        base_mbps=(2.2, 2.2, 2.2),
+        amp=(0.85, 0.85, 0.85),
+        period_s=(24.0, 24.0, 24.0),
+        base_rtt_ms=(20.0, 30.0, 45.0),
+        noise_std=0.06,
+    ),
+}
 
-def _make_dataplane(backend: str, scenario: str) -> DataPlane:
+
+def _make_dataplane(backend: str, scenario: str, mode: str) -> DataPlane:
+    scenarios = _JOINT_SCENARIOS if mode == "joint" else _SCENARIOS
     if backend == "mock":
-        cfg = _SCENARIOS.get(scenario)
+        cfg = scenarios.get(scenario)
         if cfg is None:
-            raise ValueError(f"unknown scenario {scenario!r} ({list(_SCENARIOS)})")
+            raise ValueError(
+                f"unknown {mode} scenario {scenario!r} ({list(scenarios)})"
+            )
         return MockTraceDataPlane(cfg)
     if backend == "ns3":
         from src.ns3env.dataplane import Ns3Config, Ns3DataPlane
 
-        return Ns3DataPlane(num_paths=1, config=Ns3Config())
+        num_paths = 3 if mode == "joint" else 1
+        return Ns3DataPlane(num_paths=num_paths, config=Ns3Config())
     raise ValueError(f"unknown backend {backend!r} (use 'mock' or 'ns3')")
 
 
-def _make_agent(
-    env: VideoAbrEnv, hp: VideoTrainHyperparams
-) -> EnhancedPathScoringDQNAgent:
+def _make_agent(env: Any, hp: VideoTrainHyperparams) -> EnhancedPathScoringDQNAgent:
     config = EnhancedDQNConfig(
         learning_rate=hp.learning_rate,
         gamma=hp.gamma,
@@ -203,7 +223,8 @@ def evaluate_abr_policy(
 def run_comparison(
     *,
     backend: str = "mock",
-    scenario: str = "varying",
+    scenario: Optional[str] = None,
+    mode: str = "single",
     num_episodes: int = 300,
     eval_episodes: int = 30,
     seed: int = 42,
@@ -212,10 +233,30 @@ def run_comparison(
     out_path: Optional[Path] = None,
     quiet: bool = False,
 ) -> Dict[str, Any]:
-    """Train the ABR DQN and compare it against all ABR heuristics."""
+    """Train the ABR DQN and compare it against the ABR heuristics.
+
+    ``mode='single'`` selects bitrate on one path (:class:`VideoAbrEnv` +
+    ``ABR_SELECTORS``); ``mode='joint'`` selects (path, bitrate) jointly
+    (:class:`VideoMultipathAbrEnv` + ``ABR_JOINT_SELECTORS``).
+    """
     qoe_weights = qoe_weights or QoEWeights()
-    dataplane = _make_dataplane(backend, scenario)
-    env_factory: EnvFactory = lambda: VideoAbrEnv(dataplane, qoe_weights=qoe_weights)
+    if scenario is None:
+        scenario = "crossover" if mode == "joint" else "varying"
+    dataplane = _make_dataplane(backend, scenario, mode)
+
+    if mode == "joint":
+
+        def env_factory() -> Any:
+            return VideoMultipathAbrEnv(dataplane, qoe_weights=qoe_weights)
+
+        num_bitrates = env_factory().num_bitrates
+        selectors = {n: f(num_bitrates) for n, f in ABR_JOINT_SELECTORS.items()}
+    else:
+
+        def env_factory() -> Any:
+            return VideoAbrEnv(dataplane, qoe_weights=qoe_weights)
+
+        selectors = {n: cls() for n, cls in ABR_SELECTORS.items()}
 
     train_stats, agent = train_abr_dqn(
         env_factory=env_factory, num_episodes=num_episodes, seed=seed, quiet=quiet
@@ -229,9 +270,9 @@ def run_comparison(
         seed=eval_seed,
         is_agent=True,
     )
-    for name, selector_cls in ABR_SELECTORS.items():
+    for name, selector in selectors.items():
         methods[name] = evaluate_abr_policy(
-            selector_cls(),
+            selector,
             env_factory=env_factory,
             episodes=eval_episodes,
             seed=eval_seed,
@@ -247,6 +288,7 @@ def run_comparison(
 
     results: Dict[str, Any] = {
         "backend": backend,
+        "mode": mode,
         "scenario": scenario,
         "num_train_episodes": num_episodes,
         "eval_episodes": eval_episodes,
@@ -275,7 +317,8 @@ def _print_table(results: Dict[str, Any]) -> None:
     order = sorted(methods, key=lambda n: methods[n]["mean_reward"], reverse=True)
     width = max(len(n) for n in methods)
     print(
-        f"\nABR  backend: {results['backend']}  scenario: {results.get('scenario')}  "
+        f"\nABR[{results.get('mode')}]  backend: {results['backend']}  "
+        f"scenario: {results.get('scenario')}  "
         f"(train {results['num_train_episodes']} ep, eval {results['eval_episodes']} ep)"
     )
     print(
@@ -300,7 +343,12 @@ def _print_table(results: Dict[str, Any]) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--backend", choices=["mock", "ns3"], default="mock")
-    p.add_argument("--scenario", choices=list(_SCENARIOS), default="varying")
+    p.add_argument("--mode", choices=["single", "joint"], default="single")
+    p.add_argument(
+        "--scenario",
+        default=None,
+        help="scenario preset; defaults to 'varying' (single) / 'crossover' (joint)",
+    )
     p.add_argument("--episodes", type=int, default=300)
     p.add_argument("--eval-episodes", type=int, default=30)
     p.add_argument("--seed", type=int, default=42)
@@ -311,6 +359,7 @@ def main() -> None:
     results = run_comparison(
         backend=args.backend,
         scenario=args.scenario,
+        mode=args.mode,
         num_episodes=args.episodes,
         eval_episodes=args.eval_episodes,
         seed=args.seed,

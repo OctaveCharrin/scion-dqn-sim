@@ -87,3 +87,90 @@ ABR_SELECTORS = {
     "always_min": lambda: FixedBitrateSelector(0.0),
     "fixed_mid": lambda: FixedBitrateSelector(0.5),
 }
+
+
+# --------------------------------------------------------------------------- #
+# Joint (path x bitrate) selectors for the multipath ABR env.
+# --------------------------------------------------------------------------- #
+
+from src.ns3env.abr_joint_env import (  # noqa: E402  (avoid import cycle at top)
+    CJ_FEASIBLE,
+    CJ_PATH_RTT,
+    CJ_PATH_TP,
+    GJ_BUFFER,
+)
+
+
+class JointPathBitrateSelector:
+    """Composable heuristic: pick a path, then a bitrate on it.
+
+    ``path_mode``: ``"throughput"`` (highest-capacity path) or ``"minrtt"``.
+    ``bitrate_mode``: ``"rate"`` (highest sustainable rung on the chosen path),
+    ``"buffer"`` (BBA/BOLA-style buffer->rung map), or ``"fixed"`` (``frac`` rung).
+    Returns the path-major flattened index ``path * num_bitrates + bitrate``.
+    """
+
+    def __init__(
+        self,
+        num_bitrates: int,
+        *,
+        path_mode: str = "throughput",
+        bitrate_mode: str = "rate",
+        frac: float = 1.0,
+        reservoir: float = 0.15,
+        cushion: float = 0.6,
+    ) -> None:
+        self.b = int(num_bitrates)
+        self.path_mode = path_mode
+        self.bitrate_mode = bitrate_mode
+        self.frac = float(np.clip(frac, 0.0, 1.0))
+        self.reservoir = float(reservoir)
+        self.cushion = max(float(cushion), 1e-6)
+
+    def reset(self) -> None:
+        pass
+
+    def select(self, obs: Observation) -> int:
+        paths = obs["paths"]
+        total = paths.shape[0]
+        if total == 0:
+            return 0
+        n = max(1, total // self.b)
+        cube = paths[: n * self.b].reshape(n, self.b, -1)
+
+        if self.path_mode == "minrtt":
+            p = int(np.argmin(cube[:, 0, CJ_PATH_RTT]))
+        else:
+            p = int(np.argmax(cube[:, 0, CJ_PATH_TP]))
+
+        if self.bitrate_mode == "rate":
+            sustainable = np.flatnonzero(cube[p, :, CJ_FEASIBLE] >= 1.0)
+            b = int(sustainable[-1]) if sustainable.size else 0
+        elif self.bitrate_mode == "buffer":
+            buf = float(obs["global"][GJ_BUFFER])
+            frac = float(np.clip((buf - self.reservoir) / self.cushion, 0.0, 1.0))
+            b = int(round(frac * (self.b - 1)))
+        else:  # fixed
+            b = int(round(self.frac * (self.b - 1)))
+
+        return p * self.b + b
+
+
+#: Joint registry; values are factories taking ``num_bitrates``.
+ABR_JOINT_SELECTORS = {
+    "bestpath_rate": lambda b: JointPathBitrateSelector(
+        b, path_mode="throughput", bitrate_mode="rate"
+    ),
+    "bestpath_buffer": lambda b: JointPathBitrateSelector(
+        b, path_mode="throughput", bitrate_mode="buffer"
+    ),
+    "minrtt_rate": lambda b: JointPathBitrateSelector(
+        b, path_mode="minrtt", bitrate_mode="rate"
+    ),
+    "bestpath_max": lambda b: JointPathBitrateSelector(
+        b, path_mode="throughput", bitrate_mode="fixed", frac=1.0
+    ),
+    "bestpath_min": lambda b: JointPathBitrateSelector(
+        b, path_mode="throughput", bitrate_mode="fixed", frac=0.0
+    ),
+}

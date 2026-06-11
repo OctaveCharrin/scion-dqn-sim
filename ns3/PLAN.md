@@ -24,9 +24,18 @@
 > the quality↔rebuffer↔smoothness tradeoff greedy heuristics botch. Quality uses
 > a concave log VMAF(bitrate) curve (Netflix "VMAF: The Journey Continues"),
 > swappable for measured per-content VMAF. Run:
-> `uv run python -m src.rl.video_abr_train --scenario varying`. Step 2 (next):
-> joint **(path × bitrate)** candidates for multipath ABR, reusing the same env +
-> scoring agent.
+> `uv run python -m src.rl.video_abr_train --scenario varying`.
+>
+> Step 2 done & validated: **joint (path × bitrate)** multipath ABR
+> (`src/ns3env/abr_joint_env.py`) — each (path, bitrate) pair is one scoring
+> candidate, so the same agent jointly picks path and quality (no agent change).
+> On a capacity-constrained 3-path `crossover` scenario the DQN (reward 0.835,
+> VMAF 86.9, 1.9 s/ep rebuffer) **beats** best-path-rate (0.795), best-path-buffer
+> (0.735) and best-path-max (0.728, which hits VMAF 92 but 35.6 s/ep rebuffer). It
+> reaches higher quality than the rate/buffer heuristics while keeping stalls low.
+> Run: `uv run python -m src.rl.video_abr_train --mode joint`. **Phase 2 complete.**
+> Remaining (Phase 3): wire the joint ABR onto the real NS-3 backend at scale, add
+> MPC/BOLA-proper baselines, and the numbered evaluation pipeline + figures.
 
 # Plan: Migrate to NS-3 + RL-controlled adaptive video over (abstracted) multipath QUIC
 
