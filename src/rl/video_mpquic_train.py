@@ -194,8 +194,11 @@ def evaluate_policy(
     dataplane_factory = dataplane_factory or default_dataplane_factory
     rewards: List[float] = []
     goodputs: List[float] = []
+    # One data plane reused across episodes (reseeded per episode). The NS-3
+    # backend permits only one process per Python interpreter, so the factory
+    # must not be called per episode; reset() handles episode boundaries.
+    env = Ns3VideoMpquicEnv(dataplane_factory(), reward_weights=reward_weights)
     for ep in range(episodes):
-        env = Ns3VideoMpquicEnv(dataplane_factory(), reward_weights=reward_weights)
         state = env.reset(seed=seed + ep)
         if hasattr(selector, "reset"):
             selector.reset()

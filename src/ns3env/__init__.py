@@ -20,6 +20,8 @@ from src.ns3env.dataplane import (
     DownloadResult,
     MockTraceConfig,
     MockTraceDataPlane,
+    Ns3Config,
+    Ns3DataPlane,
     PathStats,
 )
 from src.ns3env.reward import RewardWeights, compute_reward
@@ -35,6 +37,8 @@ __all__ = [
     "PathStats",
     "MockTraceConfig",
     "MockTraceDataPlane",
+    "Ns3Config",
+    "Ns3DataPlane",
     "RewardWeights",
     "compute_reward",
     "Ns3VideoMpquicEnv",
