@@ -5,6 +5,15 @@
 > on the built WSL2 tree). One path note: the NS-3 scenario landed at
 > `ns3/examples/video-mpquic/` (built under the ns-3 tree's `contrib/ai/examples/`),
 > **not** `ns3/scratch/` as the original plan text below says. Phases 2–4 are open.
+>
+> **Phase 1 milestone validated** via `src/rl/video_eval_compare.py` (train DQN +
+> compare vs all `MULTIPATH_SELECTORS` on a shared data plane). On the `crossover`
+> mock scenario (best path rotates over time) the DQN reaches reward ~0.844,
+> decisively beating round_robin (0.295), static_path0 (0.592) and single_best
+> (0.614), and *matching* the reactive `max_throughput` oracle (0.844). It can't
+> exceed reactive greedy because the abstract mock is memoryless per step — that
+> headroom is what Phase 2 (playback buffer / rebuffering / switching cost) adds.
+> Run: `uv run python -m src.rl.video_eval_compare --scenario crossover`.
 
 # Plan: Migrate to NS-3 + RL-controlled adaptive video over (abstracted) multipath QUIC
 
