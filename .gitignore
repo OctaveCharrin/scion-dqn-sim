@@ -85,6 +85,7 @@ DOCS_INTERNAL/
 external/
 experiments/
 examples/
+!ns3/examples
 
 # Pickle files
 *.pkl
