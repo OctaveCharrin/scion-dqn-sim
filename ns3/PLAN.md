@@ -14,6 +14,19 @@
 > exceed reactive greedy because the abstract mock is memoryless per step — that
 > headroom is what Phase 2 (playback buffer / rebuffering / switching cost) adds.
 > Run: `uv run python -m src.rl.video_eval_compare --scenario crossover`.
+>
+> **Phase 2 in progress (Option A, two steps).** Step 1 done & validated:
+> single-path adaptive bitrate (ABR) with a client playback buffer and a
+> **VMAF-based** QoE reward (perceptual quality − rebuffer − VMAF switching;
+> `src/ns3env/abr.py`, `abr_env.py`). The buffer adds the delayed-consequence
+> structure RL needs: on the `varying` mock the DQN (reward 0.641) **beats**
+> buffer-based/BOLA (0.598), rate-based (0.449) and fixed policies — it manages
+> the quality↔rebuffer↔smoothness tradeoff greedy heuristics botch. Quality uses
+> a concave log VMAF(bitrate) curve (Netflix "VMAF: The Journey Continues"),
+> swappable for measured per-content VMAF. Run:
+> `uv run python -m src.rl.video_abr_train --scenario varying`. Step 2 (next):
+> joint **(path × bitrate)** candidates for multipath ABR, reusing the same env +
+> scoring agent.
 
 # Plan: Migrate to NS-3 + RL-controlled adaptive video over (abstracted) multipath QUIC
 
