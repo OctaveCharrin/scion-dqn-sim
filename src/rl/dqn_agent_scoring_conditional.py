@@ -33,6 +33,12 @@ logger = logging.getLogger(__name__)
 
 CONDITIONAL_ARCH_WEIGHT_FILM = "weight_film"
 CONDITIONAL_ARCH_LEGACY = "dueling_concat"
+# Naive conditioning: the reward-weight vector is concatenated only into the
+# *value* stream, so the per-path advantage stream never sees the intent. This is
+# the textbook dueling-concat failure mode -- a change of intent can only shift
+# V(s) uniformly, which leaves argmax_i A(s, path_i) (the selected path)
+# untouched. It is the ablation baseline that is *expected* not to re-rank paths.
+CONDITIONAL_ARCH_VALUE_CONCAT = "value_only_concat"
 
 
 class WeightConditionedDuelingPathScoringDQN(nn.Module):
@@ -114,7 +120,9 @@ class WeightConditionedDuelingPathScoringDQN(nn.Module):
             )
 
         scoring = global_state[:, : self.scoring_global_dim]
-        weights = global_state[:, self.scoring_global_dim : self.scoring_global_dim + self.weight_dim]
+        weights = global_state[
+            :, self.scoring_global_dim : self.scoring_global_dim + self.weight_dim
+        ]
 
         value = self.value_stream(scoring)
 
@@ -143,10 +151,108 @@ class WeightConditionedDuelingPathScoringDQN(nn.Module):
         return q_values
 
 
+class ValueOnlyConcatDuelingPathScoringDQN(nn.Module):
+    """Dueling Q where the reward weights condition *only* the value stream.
+
+    The advantage (per-path) stream is fed topology/time context plus the raw
+    path features, but never the weight vector. Because the selected path is
+    ``argmax_i A(s, path_i)`` and the weights enter only through ``V(s)`` -- a
+    scalar added identically to every path -- the intent cannot change which
+    path wins. This is the naive-concat ablation the chapter theorizes will fail
+    to adapt, in contrast with FiLM's per-path modulation.
+    """
+
+    def __init__(
+        self,
+        scoring_global_dim: int,
+        weight_dim: int,
+        path_dim: int,
+        config: EnhancedDQNConfig,
+    ):
+        super().__init__()
+        self.scoring_global_dim = scoring_global_dim
+        self.weight_dim = weight_dim
+        self.path_dim = path_dim
+        self.config = config
+        hd = config.hidden_dim
+
+        # Value stream sees context + weights (intent shifts V(s)).
+        value_layers: List[nn.Module] = []
+        in_dim = scoring_global_dim + weight_dim
+        for _ in range(config.n_hidden_layers):
+            value_layers.append(nn.Linear(in_dim, hd))
+            if config.use_batch_norm:
+                value_layers.append(nn.BatchNorm1d(hd))
+            value_layers.append(nn.ReLU())
+            if config.dropout_rate > 0:
+                value_layers.append(nn.Dropout(config.dropout_rate))
+            in_dim = hd
+        value_layers.append(nn.Linear(in_dim, 1))
+        self.value_stream = nn.Sequential(*value_layers)
+
+        # Advantage stream sees context + path features only -- NO weights.
+        adv_layers: List[nn.Module] = []
+        in_dim = scoring_global_dim + path_dim
+        for _ in range(config.n_hidden_layers):
+            adv_layers.append(nn.Linear(in_dim, hd))
+            adv_layers.append(nn.ReLU())
+            if config.dropout_rate > 0:
+                adv_layers.append(nn.Dropout(config.dropout_rate))
+            in_dim = hd
+        adv_layers.append(nn.Linear(in_dim, 1))
+        self.advantage_stream = nn.Sequential(*adv_layers)
+        self.apply(WeightConditionedDuelingPathScoringDQN._init_weights)
+
+    def forward(
+        self,
+        global_state: torch.Tensor,
+        path_features: torch.Tensor,
+        path_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if global_state.dim() != 2 or path_features.dim() != 3:
+            raise ValueError(
+                f"Expected global (B, G) and paths (B, N, P); got {global_state.shape}, {path_features.shape}"
+            )
+        b, g = global_state.shape
+        b2, n, _p = path_features.shape
+        if b != b2:
+            raise ValueError(f"Batch mismatch: global B={b}, paths B={b2}")
+        if g < self.scoring_global_dim + self.weight_dim:
+            raise ValueError(
+                f"global_state dim {g} < scoring({self.scoring_global_dim}) + weights({self.weight_dim})"
+            )
+
+        scoring = global_state[:, : self.scoring_global_dim]
+        weights = global_state[
+            :, self.scoring_global_dim : self.scoring_global_dim + self.weight_dim
+        ]
+
+        value = self.value_stream(torch.cat([scoring, weights], dim=-1))
+
+        expanded = scoring.unsqueeze(1).expand(b, n, self.scoring_global_dim)
+        combined = torch.cat([expanded, path_features], dim=-1)
+        flat = combined.reshape(b * n, self.scoring_global_dim + self.path_dim)
+        advantage = self.advantage_stream(flat).view(b, n)
+
+        if path_mask is not None:
+            mask_f = path_mask.float()
+            adv_sum = (advantage * mask_f).sum(dim=1, keepdim=True)
+            adv_count = mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
+            adv_mean = adv_sum / adv_count
+        else:
+            adv_mean = advantage.mean(dim=1, keepdim=True)
+
+        q_values = value + (advantage - adv_mean)
+        if path_mask is not None:
+            q_values = q_values.masked_fill(~path_mask, INVALID_Q_MASK)
+        return q_values
+
+
 class ConditionalPathScoringDQNAgent(EnhancedPathScoringDQNAgent):
     """Path-scoring DQN with weight-FiLM conditioning (default for new training)."""
 
     architecture = CONDITIONAL_ARCH_WEIGHT_FILM
+    network_cls = WeightConditionedDuelingPathScoringDQN
 
     def __init__(
         self,
@@ -164,16 +270,21 @@ class ConditionalPathScoringDQNAgent(EnhancedPathScoringDQNAgent):
         self.weight_dim = weight_dim
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info("Conditional path-scoring DQN (weight-FiLM) on %s", self.device)
+        logger.info(
+            "Conditional path-scoring DQN (%s) on %s",
+            type(self).architecture,
+            self.device,
+        )
 
+        net_cls = type(self).network_cls
         net_kw = dict(
             scoring_global_dim=scoring_global_dim,
             weight_dim=weight_dim,
             path_dim=path_dim,
             config=self.config,
         )
-        self.q_network = WeightConditionedDuelingPathScoringDQN(**net_kw).to(self.device)
-        self.target_network = WeightConditionedDuelingPathScoringDQN(**net_kw).to(self.device)
+        self.q_network = net_cls(**net_kw).to(self.device)
+        self.target_network = net_cls(**net_kw).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.target_network.eval()
 
@@ -187,12 +298,12 @@ class ConditionalPathScoringDQNAgent(EnhancedPathScoringDQNAgent):
         )
 
         if self.config.use_prioritized_replay:
-            self.memory: PrioritizedPathScoringReplayBuffer | Deque[ScoringExperience] = (
-                PrioritizedPathScoringReplayBuffer(
-                    self.config.buffer_size,
-                    self.config.alpha,
-                    self.config.priority_epsilon,
-                )
+            self.memory: (
+                PrioritizedPathScoringReplayBuffer | Deque[ScoringExperience]
+            ) = PrioritizedPathScoringReplayBuffer(
+                self.config.buffer_size,
+                self.config.alpha,
+                self.config.priority_epsilon,
             )
         else:
             self.memory = deque(maxlen=self.config.buffer_size)
@@ -205,6 +316,18 @@ class ConditionalPathScoringDQNAgent(EnhancedPathScoringDQNAgent):
         self.td_errors: Deque[float] = deque(maxlen=1000)
 
 
+class ValueConcatConditionalPathScoringDQNAgent(ConditionalPathScoringDQNAgent):
+    """Naive concat baseline: reward weights condition only the value stream.
+
+    Shares the FiLM agent's training machinery but swaps in
+    :class:`ValueOnlyConcatDuelingPathScoringDQN`, whose advantage stream is
+    intent-blind. This is the ablation expected *not* to re-rank paths.
+    """
+
+    architecture = CONDITIONAL_ARCH_VALUE_CONCAT
+    network_cls = ValueOnlyConcatDuelingPathScoringDQN
+
+
 class LegacyConditionalPathScoringDQNAgent(EnhancedPathScoringDQNAgent):
     """Pre-FiLM checkpoints: full global vector in both dueling streams."""
 
@@ -213,7 +336,11 @@ class LegacyConditionalPathScoringDQNAgent(EnhancedPathScoringDQNAgent):
 
 def infer_conditional_architecture(ckpt: Mapping[str, Any]) -> str:
     arch = str(ckpt.get("architecture", "") or "").strip()
-    if arch in (CONDITIONAL_ARCH_WEIGHT_FILM, CONDITIONAL_ARCH_LEGACY):
+    if arch in (
+        CONDITIONAL_ARCH_WEIGHT_FILM,
+        CONDITIONAL_ARCH_LEGACY,
+        CONDITIONAL_ARCH_VALUE_CONCAT,
+    ):
         return arch
     sd = ckpt.get("q_network")
     if isinstance(sd, dict) and any(k.startswith("weight_film.") for k in sd):
@@ -240,8 +367,13 @@ def load_conditional_scoring_agent(
     set_conditional_weight_encoding(encoding)
 
     arch = infer_conditional_architecture(ckpt)
-    if arch == CONDITIONAL_ARCH_WEIGHT_FILM:
-        agent: EnhancedPathScoringDQNAgent = ConditionalPathScoringDQNAgent(
+    if arch in (CONDITIONAL_ARCH_WEIGHT_FILM, CONDITIONAL_ARCH_VALUE_CONCAT):
+        agent_cls = (
+            ConditionalPathScoringDQNAgent
+            if arch == CONDITIONAL_ARCH_WEIGHT_FILM
+            else ValueConcatConditionalPathScoringDQNAgent
+        )
+        agent: EnhancedPathScoringDQNAgent = agent_cls(
             global_dim=gdim,
             path_dim=pdim,
             config=cfg,
@@ -264,10 +396,13 @@ def load_conditional_scoring_agent(
 
 __all__ = [
     "ConditionalPathScoringDQNAgent",
+    "ValueConcatConditionalPathScoringDQNAgent",
     "LegacyConditionalPathScoringDQNAgent",
     "WeightConditionedDuelingPathScoringDQN",
+    "ValueOnlyConcatDuelingPathScoringDQN",
     "load_conditional_scoring_agent",
     "infer_conditional_architecture",
     "CONDITIONAL_ARCH_WEIGHT_FILM",
     "CONDITIONAL_ARCH_LEGACY",
+    "CONDITIONAL_ARCH_VALUE_CONCAT",
 ]

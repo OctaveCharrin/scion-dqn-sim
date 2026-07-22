@@ -27,7 +27,15 @@ INVALID_Q_MASK = -1e9
 
 ScoringExperience = namedtuple(
     "ScoringExperience",
-    ["global_state", "paths", "action", "reward", "next_global_state", "next_paths", "done"],
+    [
+        "global_state",
+        "paths",
+        "action",
+        "reward",
+        "next_global_state",
+        "next_paths",
+        "done",
+    ],
 )
 
 
@@ -159,7 +167,9 @@ class PrioritizedPathScoringReplayBuffer:
         self.size = 0
 
     def push(self, experience: ScoringExperience) -> None:
-        max_priority = float(self.priorities[: self.size].max()) if self.size > 0 else 1.0
+        max_priority = (
+            float(self.priorities[: self.size].max()) if self.size > 0 else 1.0
+        )
         if self.size < self.capacity:
             self.buffer.append(None)
         self.buffer[self.position] = experience
@@ -167,9 +177,7 @@ class PrioritizedPathScoringReplayBuffer:
         self.position = (self.position + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
-    def sample(
-        self, batch_size: int, beta: float, device: torch.device
-    ) -> Tuple[
+    def sample(self, batch_size: int, beta: float, device: torch.device) -> Tuple[
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
@@ -205,9 +213,15 @@ class PrioritizedPathScoringReplayBuffer:
 
         g_t = torch.as_tensor(globals_, dtype=torch.float32, device=device)
         ng_t = torch.as_tensor(next_globals_, dtype=torch.float32, device=device)
-        actions = torch.as_tensor([s.action for s in samples], dtype=torch.long, device=device)
-        rewards = torch.as_tensor([s.reward for s in samples], dtype=torch.float32, device=device)
-        dones = torch.as_tensor([s.done for s in samples], dtype=torch.float32, device=device)
+        actions = torch.as_tensor(
+            [s.action for s in samples], dtype=torch.long, device=device
+        )
+        rewards = torch.as_tensor(
+            [s.reward for s in samples], dtype=torch.float32, device=device
+        )
+        dones = torch.as_tensor(
+            [s.done for s in samples], dtype=torch.float32, device=device
+        )
 
         weights = (self.size * probs[indices]) ** (-beta)
         weights /= weights.max()
@@ -250,10 +264,12 @@ class EnhancedPathScoringDQNAgent:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         logger.info("Enhanced path-scoring DQN using device: %s", self.device)
 
-        self.q_network = DuelingPathScoringDQN(global_dim, path_dim, self.config).to(self.device)
-        self.target_network = DuelingPathScoringDQN(global_dim, path_dim, self.config).to(
+        self.q_network = DuelingPathScoringDQN(global_dim, path_dim, self.config).to(
             self.device
         )
+        self.target_network = DuelingPathScoringDQN(
+            global_dim, path_dim, self.config
+        ).to(self.device)
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.target_network.eval()
 
@@ -267,12 +283,12 @@ class EnhancedPathScoringDQNAgent:
         )
 
         if self.config.use_prioritized_replay:
-            self.memory: PrioritizedPathScoringReplayBuffer | Deque[ScoringExperience] = (
-                PrioritizedPathScoringReplayBuffer(
-                    self.config.buffer_size,
-                    self.config.alpha,
-                    self.config.priority_epsilon,
-                )
+            self.memory: (
+                PrioritizedPathScoringReplayBuffer | Deque[ScoringExperience]
+            ) = PrioritizedPathScoringReplayBuffer(
+                self.config.buffer_size,
+                self.config.alpha,
+                self.config.priority_epsilon,
             )
         else:
             self.memory = deque(maxlen=self.config.buffer_size)
@@ -297,7 +313,9 @@ class EnhancedPathScoringDQNAgent:
             paths=np.asarray(state["paths"], dtype=np.float32),
             action=int(action),
             reward=float(reward),
-            next_global_state=np.asarray(next_state["global"], dtype=np.float32).reshape(-1),
+            next_global_state=np.asarray(
+                next_state["global"], dtype=np.float32
+            ).reshape(-1),
             next_paths=np.asarray(next_state["paths"], dtype=np.float32),
             done=float(done),
         )
@@ -317,12 +335,26 @@ class EnhancedPathScoringDQNAgent:
         if (not evaluate) and random.random() < self.epsilon:
             return random.randrange(num_paths)
 
-        g = torch.as_tensor(state["global"], dtype=torch.float32, device=self.device).view(1, -1)
-        pf = torch.as_tensor(paths, dtype=torch.float32, device=self.device).unsqueeze(0)
+        g = torch.as_tensor(
+            state["global"], dtype=torch.float32, device=self.device
+        ).view(1, -1)
+        pf = torch.as_tensor(paths, dtype=torch.float32, device=self.device).unsqueeze(
+            0
+        )
         mask = torch.ones(1, num_paths, dtype=torch.bool, device=self.device)
 
-        with torch.no_grad():
-            q = self.q_network(g, pf, mask)
+        # Greedy evaluation must be deterministic: disable dropout/batch-norm noise
+        # for the forward pass, then restore the prior mode so training exploration
+        # is unchanged.
+        was_training = self.q_network.training
+        if evaluate and was_training:
+            self.q_network.eval()
+        try:
+            with torch.no_grad():
+                q = self.q_network(g, pf, mask)
+        finally:
+            if evaluate and was_training:
+                self.q_network.train()
         return int(q.argmax(dim=1).item())
 
     def replay(self) -> Optional[float]:
@@ -348,7 +380,9 @@ class EnhancedPathScoringDQNAgent:
             assert isinstance(self.memory, deque)
             batch = random.sample(self.memory, self.config.batch_size)
             g_t = torch.as_tensor(
-                np.stack([e.global_state for e in batch]), dtype=torch.float32, device=self.device
+                np.stack([e.global_state for e in batch]),
+                dtype=torch.float32,
+                device=self.device,
             )
             ng_t = torch.as_tensor(
                 np.stack([e.next_global_state for e in batch]),
@@ -359,21 +393,31 @@ class EnhancedPathScoringDQNAgent:
             next_paths_t, next_path_mask = _pad_path_arrays(
                 [e.next_paths for e in batch], self.device
             )
-            actions = torch.as_tensor([e.action for e in batch], dtype=torch.long, device=self.device)
+            actions = torch.as_tensor(
+                [e.action for e in batch], dtype=torch.long, device=self.device
+            )
             rewards = torch.as_tensor(
                 [e.reward for e in batch], dtype=torch.float32, device=self.device
             )
-            dones = torch.as_tensor([e.done for e in batch], dtype=torch.float32, device=self.device)
+            dones = torch.as_tensor(
+                [e.done for e in batch], dtype=torch.float32, device=self.device
+            )
             indices = None
             weights = torch.ones(self.config.batch_size, device=self.device)
 
-        current_q = self.q_network(g_t, paths_t, path_mask).gather(1, actions.unsqueeze(1)).squeeze(1)
+        current_q = (
+            self.q_network(g_t, paths_t, path_mask)
+            .gather(1, actions.unsqueeze(1))
+            .squeeze(1)
+        )
 
         with torch.no_grad():
             if self.config.use_double_dqn:
                 next_q_online = self.q_network(ng_t, next_paths_t, next_path_mask)
                 neg = torch.finfo(next_q_online.dtype).min / 4
-                next_actions = next_q_online.masked_fill(~next_path_mask, neg).argmax(dim=1)
+                next_actions = next_q_online.masked_fill(~next_path_mask, neg).argmax(
+                    dim=1
+                )
                 next_q = (
                     self.target_network(ng_t, next_paths_t, next_path_mask)
                     .gather(1, next_actions.unsqueeze(1))
@@ -430,7 +474,9 @@ class EnhancedPathScoringDQNAgent:
 
     def update_epsilon(self) -> None:
         if self.episodes < self.config.epsilon_decay_steps:
-            decay = (self.config.epsilon_start - self.config.epsilon_end) / self.config.epsilon_decay_steps
+            decay = (
+                self.config.epsilon_start - self.config.epsilon_end
+            ) / self.config.epsilon_decay_steps
             self.epsilon = self.config.epsilon_start - decay * self.episodes
         else:
             self.epsilon = self.config.epsilon_end

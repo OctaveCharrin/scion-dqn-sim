@@ -9,6 +9,11 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from src.pipeline.run_dirs import resolve_run_dir
+from src.rl.dqn_agent_scoring_conditional import (
+    CONDITIONAL_ARCH_LEGACY,
+    CONDITIONAL_ARCH_VALUE_CONCAT,
+    CONDITIONAL_ARCH_WEIGHT_FILM,
+)
 from src.rl.path_selection_train import (
     FlatVariant,
     ScoringHyperparams,
@@ -92,7 +97,9 @@ def print_training_summary(
         print(f"  saved: {ckpt}")
 
 
-def run_flat_training(variant: FlatVariant, title: str, argv: Optional[List[str]] = None) -> None:
+def run_flat_training(
+    variant: FlatVariant, title: str, argv: Optional[List[str]] = None
+) -> None:
     args = build_train_parser(title).parse_args(argv)
     run_path = resolve_train_run_path(args.run_dir)
     stats = train_flat_dqn(
@@ -126,8 +133,41 @@ def run_scoring_training(
     print_training_summary(stats, title=title, run_path=run_path)
 
 
-def run_conditional_training(argv: Optional[List[str]] = None) -> None:
-    title = "Conditional path-scoring DQN"
+def _resolve_conditional_architecture(architecture: Optional[str]) -> str:
+    """Resolve the conditioning architecture from arg or ``DQN_CONDITIONAL_ARCH`` env.
+
+    Accepts ``film`` (FiLM modulation, default), ``value_concat`` (weights into the
+    value stream only -- the naive ablation), and ``concat``/``legacy`` (full
+    global vector in both dueling streams).
+    """
+    raw = (
+        (architecture or os.environ.get("DQN_CONDITIONAL_ARCH", "film")).strip().lower()
+    )
+    if raw in ("film", "weight_film", CONDITIONAL_ARCH_WEIGHT_FILM):
+        return CONDITIONAL_ARCH_WEIGHT_FILM
+    if raw in ("value_concat", "value_only_concat", CONDITIONAL_ARCH_VALUE_CONCAT):
+        return CONDITIONAL_ARCH_VALUE_CONCAT
+    if raw in ("concat", "dueling_concat", "legacy", CONDITIONAL_ARCH_LEGACY):
+        return CONDITIONAL_ARCH_LEGACY
+    raise ValueError(
+        f"Unknown DQN_CONDITIONAL_ARCH {raw!r}; expected 'film', "
+        f"'value_concat', or 'concat'."
+    )
+
+
+def run_conditional_training(
+    argv: Optional[List[str]] = None,
+    *,
+    architecture: Optional[str] = None,
+) -> None:
+    arch = _resolve_conditional_architecture(architecture)
+    _kinds = {
+        CONDITIONAL_ARCH_WEIGHT_FILM: "FiLM",
+        CONDITIONAL_ARCH_VALUE_CONCAT: "value-only concat",
+        CONDITIONAL_ARCH_LEGACY: "concat",
+    }
+    kind = _kinds[arch]
+    title = f"Conditional path-scoring DQN ({kind})"
     args = build_train_parser(title).parse_args(argv)
     run_path = resolve_train_run_path(args.run_dir)
     hp = scoring_hyperparams(args.config_json)
@@ -137,6 +177,7 @@ def run_conditional_training(argv: Optional[List[str]] = None) -> None:
         num_episodes=episodes_from_env(),
         checkpoint_path=args.checkpoint,
         stats_path=args.stats_json,
+        architecture=arch,
     )
     profiles = stats.get("training_profiles") or []
     extra = [f"profiles: {', '.join(profiles)}"] if profiles else None

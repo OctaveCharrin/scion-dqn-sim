@@ -94,7 +94,9 @@ DISTINCTIVE_REWARD_PROFILES: List[RewardProfile] = [
     ),
 ]
 
-_PROFILE_BY_NAME: Dict[str, RewardProfile] = {p.name: p for p in REWARD_PROFILES}
+_PROFILE_BY_NAME: Dict[str, RewardProfile] = {
+    p.name: p for p in (*REWARD_PROFILES, *DISTINCTIVE_REWARD_PROFILES)
+}
 
 
 def get_profile(name: str) -> RewardProfile:

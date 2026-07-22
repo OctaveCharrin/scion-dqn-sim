@@ -48,7 +48,6 @@ logs/
 results/
 topologies/
 *.png
-*.pdf
 *.json
 *.graphml
 *.memmap

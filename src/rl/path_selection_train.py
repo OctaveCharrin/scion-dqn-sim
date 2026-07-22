@@ -15,8 +15,12 @@ from tqdm import tqdm
 
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
 from src.rl.dqn_agent_scoring_conditional import (
+    CONDITIONAL_ARCH_LEGACY,
+    CONDITIONAL_ARCH_VALUE_CONCAT,
     CONDITIONAL_ARCH_WEIGHT_FILM,
     ConditionalPathScoringDQNAgent,
+    LegacyConditionalPathScoringDQNAgent,
+    ValueConcatConditionalPathScoringDQNAgent,
 )
 from src.rl.dqn_agent_scoring_enhanced import EnhancedPathScoringDQNAgent
 from src.rl.dqn_agent_scoring_simple import SimplePathScoringDQNAgent
@@ -210,9 +214,11 @@ def train_flat_dqn(
                 agent.remember(state, action, reward, next_state, done)
 
             total_steps += 1
-            if len(agent.memory) >= (
-                config.min_buffer_size if config else agent.min_buffer_size
-            ) and total_steps % grad_every == 0:
+            if (
+                len(agent.memory)
+                >= (config.min_buffer_size if config else agent.min_buffer_size)
+                and total_steps % grad_every == 0
+            ):
                 loss = agent.replay()
                 if loss is not None:
                     losses.append(float(loss))
@@ -223,7 +229,9 @@ def train_flat_dqn(
                 break
 
         if variant == "enhanced":
-            agent.epsilon = max(config.epsilon_end, agent.epsilon * config.epsilon_decay)
+            agent.epsilon = max(
+                config.epsilon_end, agent.epsilon * config.epsilon_decay
+            )
         else:
             agent.epsilon = max(agent.epsilon_end, agent.epsilon * agent.epsilon_decay)
         agent.episodes += 1
@@ -263,7 +271,9 @@ def train_flat_dqn(
         "losses": losses,
         "final_epsilon": agent.epsilon,
         "avg_reward": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
-        "avg_probes_per_episode": float(np.mean(episode_probes)) if episode_probes else 0.0,
+        "avg_probes_per_episode": (
+            float(np.mean(episode_probes)) if episode_probes else 0.0
+        ),
         "reward_weights": reward_weights.to_dict(),
         "goodput_cap_mbps": goodput_cap,
         "pair_pool_size": len(pair_pool),
@@ -391,7 +401,11 @@ def train_scoring_dqn(
 
     ckpt = checkpoint_path or (
         run_path
-        / ("dqn_scoring_simple_model.pth" if variant == "simple" else "dqn_scoring_enhanced_model.pth")
+        / (
+            "dqn_scoring_simple_model.pth"
+            if variant == "simple"
+            else "dqn_scoring_enhanced_model.pth"
+        )
     )
     payload: Dict[str, Any] = {
         "q_network": agent.q_network.state_dict(),
@@ -425,7 +439,9 @@ def train_scoring_dqn(
         "losses": losses,
         "final_epsilon": agent.epsilon,
         "avg_reward": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
-        "avg_probes_per_episode": float(np.mean(episode_probes)) if episode_probes else 0.0,
+        "avg_probes_per_episode": (
+            float(np.mean(episode_probes)) if episode_probes else 0.0
+        ),
         "reward_weights": reward_weights.to_dict(),
         "goodput_cap_mbps": goodput_cap,
         "pair_pool_size": len(pair_pool),
@@ -452,12 +468,30 @@ def train_conditional_scoring_dqn(
     weight_rng_seed: int = 789,
     quiet: bool = False,
     run_context: Optional[Tuple] = None,
+    architecture: str = CONDITIONAL_ARCH_WEIGHT_FILM,
 ) -> Dict[str, Any]:
     """Train a path-scoring DQN with reward weights in the global state.
 
     Each episode samples a :class:`~src.rl.reward_profiles.RewardProfile` so the
     policy learns to optimize different composite objectives at inference time.
+
+    ``architecture`` selects how the reward-weight vector conditions the network:
+    ``CONDITIONAL_ARCH_WEIGHT_FILM`` (default) uses FiLM modulation of per-path
+    features; ``CONDITIONAL_ARCH_VALUE_CONCAT`` concatenates the weights into the
+    value stream only (the naive ablation expected not to re-rank paths);
+    ``CONDITIONAL_ARCH_LEGACY`` uses plain dueling-concat with the full global
+    vector in both streams.
     """
+    valid_archs = (
+        CONDITIONAL_ARCH_WEIGHT_FILM,
+        CONDITIONAL_ARCH_VALUE_CONCAT,
+        CONDITIONAL_ARCH_LEGACY,
+    )
+    if architecture not in valid_archs:
+        raise ValueError(
+            f"Unknown conditional architecture {architecture!r}; "
+            f"expected one of {valid_archs}"
+        )
     hp = hp or ScoringHyperparams.from_env()
     if run_context is None:
         run_context = load_run_context(run_path)
@@ -491,11 +525,24 @@ def train_conditional_scoring_dqn(
         tau=hp.tau,
     )
     set_conditional_weight_encoding("policy")
-    agent = ConditionalPathScoringDQNAgent(
-        global_dim=CONDITIONAL_SCORING_GLOBAL_DIM,
-        path_dim=PATH_FEATURE_DIM,
-        config=config,
-    )
+    if architecture == CONDITIONAL_ARCH_WEIGHT_FILM:
+        agent = ConditionalPathScoringDQNAgent(
+            global_dim=CONDITIONAL_SCORING_GLOBAL_DIM,
+            path_dim=PATH_FEATURE_DIM,
+            config=config,
+        )
+    elif architecture == CONDITIONAL_ARCH_VALUE_CONCAT:
+        agent = ValueConcatConditionalPathScoringDQNAgent(
+            global_dim=CONDITIONAL_SCORING_GLOBAL_DIM,
+            path_dim=PATH_FEATURE_DIM,
+            config=config,
+        )
+    else:
+        agent = LegacyConditionalPathScoringDQNAgent(
+            global_dim=CONDITIONAL_SCORING_GLOBAL_DIM,
+            path_dim=PATH_FEATURE_DIM,
+            config=config,
+        )
 
     base_episodes = num_episodes or _target_episodes(len(pair_pool), episode_length)
     n_episodes = max(50, int(base_episodes * conditional_episode_multiplier()))
@@ -551,10 +598,16 @@ def train_conditional_scoring_dqn(
         episode_rewards.append(ep_reward / max(1, episode_length))
         episode_probes.append(int(env.num_latency_probes + env.num_bandwidth_probes))
 
-    ckpt = checkpoint_path or (run_path / "dqn_conditional_scoring_model.pth")
+    _ckpt_names = {
+        CONDITIONAL_ARCH_WEIGHT_FILM: "dqn_conditional_scoring_model.pth",
+        CONDITIONAL_ARCH_VALUE_CONCAT: "dqn_conditional_value_concat_model.pth",
+        CONDITIONAL_ARCH_LEGACY: "dqn_conditional_concat_model.pth",
+    }
+    default_ckpt_name = _ckpt_names[architecture]
+    ckpt = checkpoint_path or (run_path / default_ckpt_name)
     payload: Dict[str, Any] = {
         "model_type": "conditional_scoring_dqn",
-        "architecture": CONDITIONAL_ARCH_WEIGHT_FILM,
+        "architecture": architecture,
         "weight_encoding": get_conditional_weight_encoding(),
         "q_network": agent.q_network.state_dict(),
         "target_network": agent.target_network.state_dict(),
@@ -578,7 +631,7 @@ def train_conditional_scoring_dqn(
 
     stats = {
         "model_type": "conditional_scoring_dqn",
-        "architecture": CONDITIONAL_ARCH_WEIGHT_FILM,
+        "architecture": architecture,
         "weight_encoding": get_conditional_weight_encoding(),
         "num_episodes": n_episodes,
         "base_episodes_before_multiplier": base_episodes,
@@ -589,7 +642,9 @@ def train_conditional_scoring_dqn(
         "losses": losses,
         "final_epsilon": agent.epsilon,
         "avg_reward": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
-        "avg_probes_per_episode": float(np.mean(episode_probes)) if episode_probes else 0.0,
+        "avg_probes_per_episode": (
+            float(np.mean(episode_probes)) if episode_probes else 0.0
+        ),
         "goodput_cap_mbps": goodput_cap,
         "pair_pool_size": len(pair_pool),
         "global_dim": CONDITIONAL_SCORING_GLOBAL_DIM,
@@ -597,7 +652,15 @@ def train_conditional_scoring_dqn(
         "hyperparams": asdict(hp),
         "checkpoint": str(ckpt),
     }
-    out_stats = stats_path or (run_path / "dqn_conditional_training_stats.json")
+    _stats_names = {
+        CONDITIONAL_ARCH_WEIGHT_FILM: "dqn_conditional_training_stats.json",
+        CONDITIONAL_ARCH_VALUE_CONCAT: (
+            "dqn_conditional_value_concat_training_stats.json"
+        ),
+        CONDITIONAL_ARCH_LEGACY: "dqn_conditional_concat_training_stats.json",
+    }
+    default_stats_name = _stats_names[architecture]
+    out_stats = stats_path or (run_path / default_stats_name)
     with open(out_stats, "w") as f:
         json.dump(stats, f, indent=2)
     return stats
