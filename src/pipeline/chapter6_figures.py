@@ -41,6 +41,8 @@ CH6_METHOD_COLORS: Dict[str, str] = {
     "shortest_path": "#E69F00",
     "widest_path": "#009E73",
     "lowest_latency": "#D55E00",
+    "ecmp": "#56B4E9",
+    "scion_default": "#999999",
     "random": "#CC79A7",
 }
 CH6_METHOD_MARKERS: Dict[str, str] = {
@@ -48,6 +50,8 @@ CH6_METHOD_MARKERS: Dict[str, str] = {
     "shortest_path": "s",
     "widest_path": "^",
     "lowest_latency": "D",
+    "ecmp": "P",
+    "scion_default": "X",
     "random": "v",
 }
 INTENT_COLORS: Dict[str, str] = {
@@ -63,6 +67,8 @@ _METHOD_ORDER = [
     "shortest_path",
     "widest_path",
     "lowest_latency",
+    "ecmp",
+    "scion_default",
     "random",
 ]
 

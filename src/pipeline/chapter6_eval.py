@@ -29,7 +29,9 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
+from src.baselines.ecmp import ECMPSelector
 from src.baselines.lowest_latency import LowestLatencySelector
+from src.baselines.scion_default import SCIONDefaultSelector
 from src.baselines.shortest_path import ShortestPathSelector
 from src.baselines.widest_path import WidestPathSelector
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
@@ -88,6 +90,8 @@ METHOD_LABELS: Dict[str, str] = {
     "shortest_path": "Shortest-Path",
     "widest_path": "Widest-Path",
     "lowest_latency": "Lowest-Latency",
+    "ecmp": "ECMP",
+    "scion_default": "SCION-Default",
     "random": "Random",
 }
 
@@ -207,7 +211,13 @@ def _select_baseline(
     if method == "random":
         action = int(np.random.default_rng(hash((pair, n)) & 0xFFFFFFFF).integers(0, n))
     else:
-        flow_stub = {"src": int(pair[0]), "dst": int(pair[1])}
+        flow_stub = {
+            "src": int(pair[0]),
+            "dst": int(pair[1]),
+            "source_as": int(pair[0]),
+            "destination_as": int(pair[1]),
+            "flow_id": 0,
+        }
         action = int(
             selector.select_path(
                 env.available_paths,
@@ -581,6 +591,8 @@ def _baseline_selectors() -> Dict[str, Any]:
         "shortest_path": ShortestPathSelector(),
         "widest_path": WidestPathSelector(),
         "lowest_latency": LowestLatencySelector(),
+        "ecmp": ECMPSelector(),
+        "scion_default": SCIONDefaultSelector(),
         "random": None,  # handled inline
     }
 
@@ -611,6 +623,8 @@ def run_probing_ceiling(
         "shortest_path",
         "widest_path",
         "lowest_latency",
+        "ecmp",
+        "scion_default",
         "random",
     ]
 
