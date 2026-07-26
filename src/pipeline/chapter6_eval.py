@@ -37,7 +37,11 @@ from src.baselines.widest_path import WidestPathSelector
 from src.rl.dqn_agent_enhanced import EnhancedDQNAgent, EnhancedDQNConfig
 from src.rl.dqn_agent_scoring_conditional import load_conditional_scoring_agent
 from src.rl.reward_profiles import RewardProfile, get_profile
-from src.simulation.evaluation_env import FLAT_GLOBAL_DIM, RewardWeights
+from src.simulation.evaluation_env import (
+    FLAT_GLOBAL_DIM,
+    RewardWeights,
+    encode_reward_weights_for_conditional,
+)
 from src.simulation.run_context import compute_action_dim, load_run_context, make_env
 
 # Held-out evaluation window: the last 14 days (training uses the first 14).
@@ -65,18 +69,36 @@ INTENT_LABELS: Dict[str, str] = {
     "balanced_extreme": "Balanced",
 }
 
-# Conditioning DQN methods and their checkpoint filenames. ``conditional_concat``
-# is the naive value-only-concat baseline (intent in the value stream only) that
-# the chapter contrasts with FiLM. The legacy 2-stream concat architecture
-# (``dqn_conditional_concat_model.pth``) is intentionally not evaluated here: it is
-# statistically tied with FiLM on quality but adds no principle, so the chapter
-# reports the clean three-way Flat -> value-only concat -> FiLM. The legacy trainer
-# and agent class remain available for anyone who wants that variant.
+# Conditioning DQN methods and their checkpoint filenames. The three differ only
+# in *where* the intent vector enters the dueling head:
+#   conditional_concat         -- value stream only. Cannot re-rank by the
+#                                 cancellation argument (a path-independent term
+#                                 drops out of the argmax); the structural claim
+#                                 is unit-tested in tests/test_chapter6_eval.py.
+#   conditional_concat_2stream -- both streams, so the advantage stream sees the
+#                                 intent alongside each path's features. This is
+#                                 the honest control: it *can* re-rank. It was
+#                                 previously excluded here, which left the
+#                                 ablation comparing FiLM only against a variant
+#                                 that was incapable of competing.
+#   conditional_film           -- FiLM modulation of the per-path features.
 CONDITIONAL_CHECKPOINTS: Dict[str, str] = {
     "conditional_film": "dqn_conditional_scoring_model.pth",
     "conditional_concat": "dqn_conditional_value_concat_model.pth",
+    "conditional_concat_2stream": "dqn_conditional_concat_model.pth",
 }
+# Which conditional variant the single-agent studies (intent alignment, probing,
+# ceiling) profile. Kept at the historical default so existing callers are
+# unaffected; pass agent_key/--agent to profile the variant the thesis ships.
+DEFAULT_CONDITIONAL_AGENT = "conditional_film"
 FLAT_CHECKPOINT = "dqn_model.pth"
+# Unconditioned path-scoring agent: the architectural control that separates
+# "conditioning helps" from "per-path scoring helps".
+SCORING_CHECKPOINT = "dqn_scoring_enhanced_model.pth"
+# Per-context argmax of the true reward under the intent being scored. Not a
+# deployable policy -- it is the per-intent upper bound that turns the ablation
+# table into a normalized optimality gap.
+ORACLE_METHOD = "oracle"
 
 # Canonical (neutral) trust weights for reporting intrinsic path trust, so trust
 # is comparable across intents rather than re-scaled by each profile.
@@ -85,8 +107,11 @@ _TRUST_W4 = 0.5
 
 METHOD_LABELS: Dict[str, str] = {
     "flat_dqn": "Flat DQN",
-    "conditional_concat": "Conditional-Concat",
+    "scoring_enhanced": "Scoring DQN (uncond.)",
+    "conditional_concat": "Value-Concat",
+    "conditional_concat_2stream": "Two-Stream-Concat",
     "conditional_film": "Conditional-FiLM",
+    "oracle": "Oracle",
     "shortest_path": "Shortest-Path",
     "widest_path": "Widest-Path",
     "lowest_latency": "Lowest-Latency",
@@ -111,14 +136,33 @@ def _intrinsic_trust(latency_ms: float, loss_rate: float) -> float:
     return max(0.0, min(1.0, 1.0 - (_TRUST_W3 * float(loss_rate) + _TRUST_W4 * delay)))
 
 
-def _profiles() -> List[RewardProfile]:
-    return [get_profile(name) for name in INTENT_PROFILES]
+def _profiles(names: Optional[Sequence[str]] = None) -> List[RewardProfile]:
+    return [get_profile(name) for name in (names or INTENT_PROFILES)]
 
 
 def _eval_pairs(
-    pair_pool: Sequence[Tuple[int, int]], max_pairs: int
+    pair_pool: Sequence[Tuple[int, int]],
+    max_pairs: int,
+    pairs: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> List[Tuple[int, int]]:
+    """Evaluation pairs: an explicit list if given (e.g. a held-out set), else the
+    first ``max_pairs`` of the pool."""
+    if pairs:
+        chosen = [(int(a), int(b)) for a, b in pairs]
+        return chosen[: min(len(chosen), max_pairs)] if max_pairs else chosen
     return list(pair_pool[: min(len(pair_pool), max_pairs)])
+
+
+def _eval_hours(hour_stride: int = 1) -> List[int]:
+    stride = max(1, int(hour_stride))
+    return EVAL_HOURS[::stride]
+
+
+def _full_probe_cost_ms(env: Any, hop_count: int) -> float:
+    """Cost the environment would charge for a full bandwidth probe of one path."""
+    return float(env.bandwidth_probe_cost_ms) + float(
+        env.per_hop_full_probe_cost_ms
+    ) * int(hop_count)
 
 
 def _write_csv(
@@ -148,6 +192,20 @@ def load_conditional_agents(run_path: Path) -> Dict[str, Any]:
     return agents
 
 
+def _require_conditional_agent(run_path: Path, agent_key: str) -> Any:
+    """Load one conditional agent by key, failing loudly if it is unknown or absent."""
+    if agent_key not in CONDITIONAL_CHECKPOINTS:
+        known = ", ".join(sorted(CONDITIONAL_CHECKPOINTS))
+        raise KeyError(f"Unknown conditional agent {agent_key!r}. Known agents: {known}.")
+    agent = load_conditional_agents(run_path).get(agent_key)
+    if agent is None:
+        raise FileNotFoundError(
+            f"Checkpoint {CONDITIONAL_CHECKPOINTS[agent_key]} for {agent_key!r} "
+            f"not found under {run_path}."
+        )
+    return agent
+
+
 def load_flat_agent(run_path: Path, action_dim: int) -> Optional[Any]:
     ckpt = _load_checkpoint(run_path / FLAT_CHECKPOINT)
     if not ckpt:
@@ -161,6 +219,25 @@ def load_flat_agent(run_path: Path, action_dim: int) -> Optional[Any]:
     agent.q_network.load_state_dict(ckpt["q_network"])
     agent.epsilon = 0.0
     agent.q_network.eval()  # deterministic greedy eval (no dropout noise)
+    return agent
+
+
+def load_scoring_agent(run_path: Path) -> Optional[Any]:
+    """Unconditioned enhanced path-scoring agent (the architectural control)."""
+    ckpt = _load_checkpoint(run_path / SCORING_CHECKPOINT)
+    if not ckpt:
+        return None
+    from src.rl.dqn_agent_scoring_enhanced import EnhancedPathScoringDQNAgent
+    from src.simulation.evaluation_env import PATH_FEATURE_DIM, SCORING_GLOBAL_DIM
+
+    agent = EnhancedPathScoringDQNAgent(
+        global_dim=int(ckpt.get("global_dim", SCORING_GLOBAL_DIM)),
+        path_dim=int(ckpt.get("path_dim", PATH_FEATURE_DIM)),
+        config=ckpt.get("config") or EnhancedDQNConfig(),
+    )
+    agent.q_network.load_state_dict(ckpt["q_network"])
+    agent.epsilon = 0.0
+    agent.q_network.eval()
     return agent
 
 
@@ -239,12 +316,25 @@ def run_ablation(
     max_pairs: int = MAX_EVAL_PAIRS,
     progress: Optional[Callable[[str], None]] = None,
     run_context: Optional[tuple] = None,
+    profiles: Optional[Sequence[str]] = None,
+    pairs: Optional[Sequence[Tuple[int, int]]] = None,
+    hour_stride: int = 1,
+    include_oracle: bool = True,
 ) -> Dict[str, Any]:
-    """Table 6.1: mean intent-weighted reward + behavioral divergence per method."""
+    """Table 6.1: mean intent-weighted reward + behavioral divergence per method.
+
+    Every method and every intent is scored on the *same* decision contexts: the
+    context is established once per (pair, hour) by a single ``reset``, and each
+    policy is then scored with ``evaluate_action``, which does not advance the
+    clock. That makes the per-context reward arrays paired by construction (they
+    are persisted for the significance test) and is what makes evaluating six
+    methods affordable.
+    """
     log = progress or (lambda _m: None)
     ctx = run_context or load_run_context(run_path)
     topology_data, path_store, link_states, pair_pool, _goodput_cap = ctx
-    eval_pairs = _eval_pairs(pair_pool, max_pairs)
+    eval_pairs = _eval_pairs(pair_pool, max_pairs, pairs)
+    eval_hours = _eval_hours(hour_stride)
 
     agents: Dict[str, Any] = {}
     if (run_path / FLAT_CHECKPOINT).is_file():
@@ -255,23 +345,31 @@ def run_ablation(
         flat = None
     if flat is not None:
         agents["flat_dqn"] = flat
+    scoring = load_scoring_agent(run_path)
+    if scoring is not None:
+        agents["scoring_enhanced"] = scoring
     agents.update(load_conditional_agents(run_path))
     if not agents:
         raise FileNotFoundError(
             f"No ablation checkpoints found under {run_path} "
-            f"(need any of {FLAT_CHECKPOINT}, {', '.join(CONDITIONAL_CHECKPOINTS.values())})."
+            f"(need any of {FLAT_CHECKPOINT}, {SCORING_CHECKPOINT}, "
+            f"{', '.join(CONDITIONAL_CHECKPOINTS.values())})."
         )
 
     method_order = [
         m
         for m in (
             "flat_dqn",
+            "scoring_enhanced",
             "conditional_concat",
+            "conditional_concat_2stream",
             "conditional_film",
         )
         if m in agents
     ]
-    profiles = _profiles()
+    if include_oracle:
+        method_order.append(ORACLE_METHOD)
+    profile_list = _profiles(profiles)
     env = make_env(
         topology_data,
         path_store,
@@ -282,85 +380,171 @@ def run_ablation(
         reward_weights=RewardWeights(),
     )
 
-    reward_rows: List[Dict[str, Any]] = []
-    divergence_rows: List[Dict[str, Any]] = []
+    # method -> profile -> list of per-context values, in a single shared order.
+    def _acc() -> Dict[str, Dict[str, List[float]]]:
+        return {m: {p.name: [] for p in profile_list} for m in method_order}
 
-    for method in method_order:
-        agent = agents[method]
-        # Per (pair, hour) context: choice + per-profile reward.
-        # Accumulators per profile.
-        prof_reward: Dict[str, List[float]] = {p.name: [] for p in profiles}
-        prof_goodput: Dict[str, List[float]] = {p.name: [] for p in profiles}
-        prof_latency: Dict[str, List[float]] = {p.name: [] for p in profiles}
-        prof_trust: Dict[str, List[float]] = {p.name: [] for p in profiles}
-        divergences: List[float] = []
-        entropies: List[float] = []
+    acc_reward = _acc()
+    acc_goodput = _acc()
+    acc_latency = _acc()
+    acc_trust = _acc()
+    acc_hops = _acc()
+    acc_choice: Dict[str, Dict[str, List[int]]] = {
+        m: {p.name: [] for p in profile_list} for m in method_order
+    }
+    n_paths_seen: List[int] = []
+    n_contexts = 0
 
-        for hour_idx in EVAL_HOURS:
-            for pair in eval_pairs:
-                choices: List[int] = []
-                context_ok = True
-                for profile in profiles:
-                    env.reward_weights = profile.weights
-                    env.reset(source_as=pair[0], dest_as=pair[1], hour_idx=hour_idx)
-                    n = len(env.available_paths)
-                    if n == 0:
-                        context_ok = False
-                        break
-                    if method == "flat_dqn":
-                        action = _select_flat(agent, env, action_dim)
+    for hour_idx in eval_hours:
+        for pair in eval_pairs:
+            env.reset(source_as=pair[0], dest_as=pair[1], hour_idx=hour_idx)
+            n = len(env.available_paths)
+            if n == 0:
+                continue
+            # Metrics and the reward normalizer are intent-independent, so they
+            # are computed once and shared by every method and every intent.
+            pms = env.path_metrics_snapshot()
+            max_bw = max((float(m.get("bandwidth_mbps") or 0.0) for m in pms), default=0.0)
+            probe_costs = [
+                _full_probe_cost_ms(env, m.get("hop_count", 1)) for m in pms
+            ]
+            n_paths_seen.append(n)
+            n_contexts += 1
+
+            for profile in profile_list:
+                env.reward_weights = profile.weights
+                # The per-path feature block depends on the intent (its trust
+                # column uses w3/w4), so it is rebuilt per intent -- but shared
+                # across the scoring/conditional agents.
+                obs = env.observe_scoring()
+                cond_obs = None
+                flat_state = None
+
+                for method in method_order:
+                    if method == ORACLE_METHOD:
+                        best_i, best_r = 0, -np.inf
+                        for i, pm in enumerate(pms):
+                            r = env.compute_reward(
+                                pm,
+                                max_possible_bw=max_bw,
+                                probe_cost_ms=probe_costs[i],
+                                num_probes_in_step=1,
+                            )
+                            if r > best_r:
+                                best_i, best_r = i, r
+                        action, reward = best_i, float(best_r)
                     else:
-                        action = _select_conditional(agent, env)
-                    if action is None:
-                        context_ok = False
-                        break
-                    reward, _done, info = env.apply_action(action, probe="full")
-                    pm = info["path_metrics"]
-                    prof_reward[profile.name].append(float(reward))
-                    bw = float(pm.get("bandwidth_mbps") or 0.0)
-                    prof_goodput[profile.name].append(bw)
-                    prof_latency[profile.name].append(float(pm.get("latency_ms", 50.0)))
-                    prof_trust[profile.name].append(
+                        if method == "flat_dqn":
+                            if flat_state is None:
+                                flat_state = (
+                                    env.observe_flat(),
+                                    env.action_mask(action_dim),
+                                )
+                            action = int(
+                                agents[method].act(
+                                    flat_state[0], action_mask=flat_state[1]
+                                )
+                            )
+                            if action >= n:
+                                valid = np.where(flat_state[1])[0]
+                                action = int(valid[0]) if len(valid) else 0
+                        elif method == "scoring_enhanced":
+                            action = int(agents[method].act(obs, evaluate=True))
+                        else:
+                            if cond_obs is None:
+                                cond_obs = {
+                                    "global": np.concatenate(
+                                        [
+                                            obs["global"],
+                                            encode_reward_weights_for_conditional(
+                                                env.reward_weights
+                                            ),
+                                        ]
+                                    ).astype(np.float32),
+                                    "paths": obs["paths"],
+                                }
+                            action = int(agents[method].act(cond_obs, evaluate=True))
+                        if action >= n:
+                            action = 0
+                        reward = env.compute_reward(
+                            pms[action],
+                            max_possible_bw=max_bw,
+                            probe_cost_ms=probe_costs[action],
+                            num_probes_in_step=1,
+                        )
+
+                    pm = pms[action]
+                    name = profile.name
+                    acc_reward[method][name].append(float(reward))
+                    acc_goodput[method][name].append(float(pm.get("bandwidth_mbps") or 0.0))
+                    acc_latency[method][name].append(float(pm.get("latency_ms", 50.0)))
+                    acc_trust[method][name].append(
                         _intrinsic_trust(
                             pm.get("latency_ms", 50.0), pm.get("loss_rate", 0.0)
                         )
                     )
-                    choices.append(int(action))
-                if not context_ok or not choices:
-                    continue
-                n_paths_ctx = max(2, len(env.available_paths))
-                distinct = len(set(choices))
-                denom = min(len(profiles), n_paths_ctx) - 1
-                divergences.append((distinct - 1) / denom if denom > 0 else 0.0)
-                entropies.append(_choice_entropy(choices))
+                    acc_hops[method][name].append(float(pm.get("hop_count", 1)))
+                    acc_choice[method][name].append(int(action))
 
-        for profile in profiles:
-            rewards = prof_reward[profile.name]
+        if n_contexts and n_contexts % (24 * max(1, len(eval_pairs))) == 0:
+            log(f"  ablation: hour {hour_idx} ({n_contexts} contexts so far)")
+
+    reward_rows: List[Dict[str, Any]] = []
+    divergence_rows: List[Dict[str, Any]] = []
+    oracle_mean = {
+        p.name: (
+            float(np.mean(acc_reward[ORACLE_METHOD][p.name]))
+            if include_oracle and acc_reward[ORACLE_METHOD][p.name]
+            else float("nan")
+        )
+        for p in profile_list
+    }
+    mean_n_paths = float(np.mean(n_paths_seen)) if n_paths_seen else float("nan")
+
+    for method in method_order:
+        for profile in profile_list:
+            name = profile.name
+            rewards = acc_reward[method][name]
             n = len(rewards)
+            mean_r = float(np.mean(rewards)) if n else float("nan")
+            ref = oracle_mean.get(name, float("nan"))
             reward_rows.append(
                 {
                     "method": method,
                     "method_label": METHOD_LABELS.get(method, method),
-                    "profile": profile.name,
-                    "profile_label": INTENT_LABELS.get(profile.name, profile.name),
+                    "profile": name,
+                    "profile_label": INTENT_LABELS.get(name, name),
                     "n_selections": n,
-                    "reward_mean": float(np.mean(rewards)) if n else float("nan"),
+                    "reward_mean": mean_r,
                     "reward_std": float(np.std(rewards)) if n else float("nan"),
                     "goodput_mean_mbps": (
-                        float(np.mean(prof_goodput[profile.name]))
-                        if n
-                        else float("nan")
+                        float(np.mean(acc_goodput[method][name])) if n else float("nan")
                     ),
                     "latency_mean_ms": (
-                        float(np.mean(prof_latency[profile.name]))
-                        if n
-                        else float("nan")
+                        float(np.mean(acc_latency[method][name])) if n else float("nan")
                     ),
                     "trust_mean": (
-                        float(np.mean(prof_trust[profile.name])) if n else float("nan")
+                        float(np.mean(acc_trust[method][name])) if n else float("nan")
+                    ),
+                    "hops_mean": (
+                        float(np.mean(acc_hops[method][name])) if n else float("nan")
+                    ),
+                    "n_paths_mean": mean_n_paths,
+                    "optimality_gap": (
+                        float(ref - mean_r) if ref == ref and mean_r == mean_r else float("nan")
                     ),
                 }
             )
+        # Behavioral divergence: how much the chosen path moves with the intent,
+        # over contexts shared by every method.
+        divergences: List[float] = []
+        entropies: List[float] = []
+        for ctx_i in range(n_contexts):
+            choices = [acc_choice[method][p.name][ctx_i] for p in profile_list]
+            n_paths_ctx = max(2, n_paths_seen[ctx_i])
+            denom = min(len(profile_list), n_paths_ctx) - 1
+            divergences.append((len(set(choices)) - 1) / denom if denom > 0 else 0.0)
+            entropies.append(_choice_entropy(choices))
         divergence_rows.append(
             {
                 "method": method,
@@ -372,7 +556,7 @@ def run_ablation(
                 "n_contexts": len(divergences),
             }
         )
-        log(f"  ablation: {method} done ({len(divergences)} contexts)")
+        log(f"  ablation: {method} done ({n_contexts} contexts)")
 
     reward_csv = out_dir / "ablation_reward_matrix.csv"
     _write_csv(
@@ -388,8 +572,22 @@ def run_ablation(
             "goodput_mean_mbps",
             "latency_mean_ms",
             "trust_mean",
+            "hops_mean",
+            "n_paths_mean",
+            "optimality_gap",
         ],
         reward_rows,
+    )
+    # Paired per-context rewards for the significance test (task 6.4). Contexts
+    # are in identical order for every (method, profile) key.
+    out_dir.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        out_dir / "ablation_per_context_rewards.npz",
+        **{
+            f"{m}|{p.name}": np.asarray(acc_reward[m][p.name], dtype=np.float32)
+            for m in method_order
+            for p in profile_list
+        },
     )
     div_csv = out_dir / "ablation_behavioral_divergence.csv"
     _write_csv(
@@ -405,14 +603,17 @@ def run_ablation(
     )
     table_path = out_dir / "table_6_1.tex"
     _write_ablation_table(
-        table_path, method_order, profiles, reward_rows, divergence_rows
+        table_path, method_order, profile_list, reward_rows, divergence_rows
     )
 
     return {
         "reward_csv": str(reward_csv),
         "divergence_csv": str(div_csv),
         "table_tex": str(table_path),
+        "per_context_npz": str(out_dir / "ablation_per_context_rewards.npz"),
         "methods": method_order,
+        "profiles": [p.name for p in profile_list],
+        "n_contexts": n_contexts,
         "reward_rows": reward_rows,
         "divergence_rows": divergence_rows,
     }
@@ -474,19 +675,19 @@ def run_intent_alignment(
     max_pairs: int = MAX_EVAL_PAIRS,
     progress: Optional[Callable[[str], None]] = None,
     run_context: Optional[tuple] = None,
+    agent_key: str = DEFAULT_CONDITIONAL_AGENT,
 ) -> Dict[str, Any]:
-    """Figure 6.1: R(intent_told, intent_scored) + chosen-path metric distributions (FiLM)."""
+    """Figure 6.1: R(intent_told, intent_scored) + chosen-path metric distributions.
+
+    ``agent_key`` selects which conditional agent is profiled; it must be a key of
+    ``CONDITIONAL_CHECKPOINTS``. The chapter reports whichever variant it ships.
+    """
     log = progress or (lambda _m: None)
     ctx = run_context or load_run_context(run_path)
     topology_data, path_store, link_states, pair_pool, _goodput_cap = ctx
     eval_pairs = _eval_pairs(pair_pool, max_pairs)
 
-    agents = load_conditional_agents(run_path)
-    agent = agents.get("conditional_film")
-    if agent is None:
-        raise FileNotFoundError(
-            f"FiLM checkpoint {CONDITIONAL_CHECKPOINTS['conditional_film']} not found under {run_path}."
-        )
+    agent = _require_conditional_agent(run_path, agent_key)
 
     profiles = _profiles()
     env = make_env(
@@ -530,15 +731,30 @@ def run_intent_alignment(
                         weights=scored.weights.to_dict(),
                     )
                     matrix_acc[told.name][scored.name].append(float(r_j))
+                lat_ms = float(pm.get("latency_ms", 50.0))
+                loss = float(pm.get("loss_rate", 0.0))
+                w = told.weights
                 metric_rows.append(
                     {
                         "intent": told.name,
                         "intent_label": INTENT_LABELS.get(told.name, told.name),
-                        "latency_ms": float(pm.get("latency_ms", 50.0)),
+                        "latency_ms": lat_ms,
                         "bandwidth_mbps": float(pm.get("bandwidth_mbps") or 0.0),
-                        "trust": _intrinsic_trust(
-                            pm.get("latency_ms", 50.0), pm.get("loss_rate", 0.0)
+                        "trust": _intrinsic_trust(lat_ms, loss),
+                        # Trust scored under this intent's own w3/w4 rather than
+                        # the canonical 0.5/0.5, which is the comparison the
+                        # "Low-Loss intent -> higher trust" panel is really after.
+                        "trust_own_w": max(
+                            0.0,
+                            min(
+                                1.0,
+                                1.0
+                                - (w.w3 * loss + w.w4 * min(100.0, lat_ms) / 100.0),
+                            ),
                         ),
+                        # What the Low-Loss intent actually optimizes.
+                        "loss_rate": loss,
+                        "hop_count": int(pm.get("hop_count", 1)),
                     }
                 )
         log(f"  intent alignment: told={told.name} done")
@@ -574,7 +790,16 @@ def run_intent_alignment(
     metrics_csv = out_dir / "intent_selection_metrics.csv"
     _write_csv(
         metrics_csv,
-        ["intent", "intent_label", "latency_ms", "bandwidth_mbps", "trust"],
+        [
+            "intent",
+            "intent_label",
+            "latency_ms",
+            "bandwidth_mbps",
+            "trust",
+            "trust_own_w",
+            "loss_rate",
+            "hop_count",
+        ],
         metric_rows,
     )
 
@@ -605,21 +830,31 @@ def run_probing_ceiling(
     n_congestion_bins: int = 6,
     progress: Optional[Callable[[str], None]] = None,
     run_context: Optional[tuple] = None,
+    profiles: Optional[Sequence[str]] = None,
+    pairs: Optional[Sequence[Tuple[int, int]]] = None,
+    agent_key: str = DEFAULT_CONDITIONAL_AGENT,
 ) -> Dict[str, Any]:
-    """Figures 6.2 & 6.3: quality vs probe cost, and QoE vs congestion (single-path ceiling)."""
+    """Figures 6.2 & 6.3: quality vs probe cost, and QoE vs congestion (single-path ceiling).
+
+    ``profiles`` selects which intents to run the comparison under. The first one
+    drives ``probing_quality.csv`` / ``ceiling_by_congestion.csv`` (the schema the
+    chapter figures read); with more than one, an additional
+    ``probing_quality_by_intent.csv`` carries every (method, intent) pair, which
+    is what supports the stronger claim that one conditioned policy tracks the
+    *per-intent* strongest heuristic.
+
+    ``agent_key`` selects which conditional agent stands in for the learned
+    selector; it must be a key of ``CONDITIONAL_CHECKPOINTS``.
+    """
     log = progress or (lambda _m: None)
     ctx = run_context or load_run_context(run_path)
     topology_data, path_store, link_states, pair_pool, _goodput_cap = ctx
-    eval_pairs = _eval_pairs(pair_pool, max_pairs)
+    eval_pairs = _eval_pairs(pair_pool, max_pairs, pairs)
 
-    film = load_conditional_agents(run_path).get("conditional_film")
-    if film is None:
-        raise FileNotFoundError(
-            f"FiLM checkpoint {CONDITIONAL_CHECKPOINTS['conditional_film']} not found under {run_path}."
-        )
+    learned = _require_conditional_agent(run_path, agent_key)
     baselines = _baseline_selectors()
     method_order = [
-        "conditional_film",
+        agent_key,
         "shortest_path",
         "widest_path",
         "lowest_latency",
@@ -628,11 +863,11 @@ def run_probing_ceiling(
         "random",
     ]
 
-    # Evaluate under a Balanced intent so goodput/reward are comparable to
-    # heuristics. Use ``balanced_extreme`` (in the conditional training set), not
-    # the untrained ``balanced`` profile, so the FiLM agent is fed a weight vector
-    # it actually learned to condition on.
-    balanced = get_profile("balanced_extreme")
+    # Default: a Balanced intent so goodput/reward are comparable to heuristics.
+    # ``balanced_extreme`` is in the conditional training set, unlike the
+    # ``balanced`` profile, so the agent is fed a weight vector it learned on.
+    profile_list = _profiles(profiles or ["balanced_extreme"])
+    primary = profile_list[0]
     env = make_env(
         topology_data,
         path_store,
@@ -640,97 +875,122 @@ def run_probing_ceiling(
         eval_pairs,
         episode_length=1,
         rng_seed=7,
-        reward_weights=balanced.weights,
+        reward_weights=primary.weights,
     )
 
-    # Per-selection records for congestion binning.
-    per_sel: Dict[str, List[Dict[str, float]]] = {m: [] for m in method_order}
-    # Per-method probe accounting.
-    probe_acc: Dict[str, Dict[str, float]] = {
-        m: {"probe_cost_ms": 0.0, "n_probes": 0.0, "n_sel": 0.0} for m in method_order
+    # (profile, method) -> per-selection records for congestion binning.
+    per_sel: Dict[Tuple[str, str], List[Dict[str, float]]] = {
+        (p.name, m): [] for p in profile_list for m in method_order
+    }
+    probe_acc: Dict[Tuple[str, str], Dict[str, float]] = {
+        (p.name, m): {"probe_cost_ms": 0.0, "n_probes": 0.0, "n_sel": 0.0}
+        for p in profile_list
+        for m in method_order
     }
 
-    for method in method_order:
-        for hour_idx in EVAL_HOURS:
-            for pair in eval_pairs:
-                env.reward_weights = balanced.weights
-                env.reset(source_as=pair[0], dest_as=pair[1], hour_idx=hour_idx)
-                n = len(env.available_paths)
-                if n == 0:
-                    continue
-                # Mean utilization across the flow's candidate paths at this hour.
-                congestion = float(env.observe_flat()[2])
-                if method == "conditional_film":
-                    action = _select_conditional(film, env)
-                    if action is None:
+    for profile in profile_list:
+        for method in method_order:
+            key = (profile.name, method)
+            for hour_idx in EVAL_HOURS:
+                for pair in eval_pairs:
+                    env.reward_weights = profile.weights
+                    env.reset(source_as=pair[0], dest_as=pair[1], hour_idx=hour_idx)
+                    n = len(env.available_paths)
+                    if n == 0:
                         continue
-                    reward, _done, info = env.apply_action(action, probe="full")
-                    step_probe_cost = float(info.get("step_probe_cost_ms", 0.0))
-                    n_probes = 1
-                else:
-                    action, step_probe_cost, n_probes = _select_baseline(
-                        method, baselines[method], env, pair
+                    # Mean utilization across the flow's candidate paths this hour.
+                    congestion = float(env.observe_flat()[2])
+                    if method == agent_key:
+                        action = _select_conditional(learned, env)
+                        if action is None:
+                            continue
+                        reward, _done, info = env.apply_action(action, probe="full")
+                        step_probe_cost = float(info.get("step_probe_cost_ms", 0.0))
+                        n_probes = 1
+                    else:
+                        action, step_probe_cost, n_probes = _select_baseline(
+                            method, baselines[method], env, pair
+                        )
+                        if action is None:
+                            continue
+                        _obs, reward, _done, info = env.step(
+                            action,
+                            step_probe_cost_ms=step_probe_cost,
+                            num_probes_in_step=max(1, n_probes),
+                        )
+                    pm = info["path_metrics"]
+                    per_sel[key].append(
+                        {
+                            "congestion": congestion,
+                            "goodput": float(pm.get("bandwidth_mbps") or 0.0),
+                            "reward": float(reward),
+                        }
                     )
-                    if action is None:
-                        continue
-                    _obs, reward, _done, info = env.step(
-                        action,
-                        step_probe_cost_ms=step_probe_cost,
-                        num_probes_in_step=max(1, n_probes),
-                    )
-                pm = info["path_metrics"]
-                goodput = float(pm.get("bandwidth_mbps") or 0.0)
-                per_sel[method].append(
-                    {
-                        "congestion": congestion,
-                        "goodput": goodput,
-                        "reward": float(reward),
-                    }
-                )
-                probe_acc[method]["probe_cost_ms"] += step_probe_cost
-                probe_acc[method]["n_probes"] += n_probes
-                probe_acc[method]["n_sel"] += 1
-        log(f"  probing/ceiling: {method} done")
+                    probe_acc[key]["probe_cost_ms"] += step_probe_cost
+                    probe_acc[key]["n_probes"] += n_probes
+                    probe_acc[key]["n_sel"] += 1
+            log(f"  probing/ceiling: {profile.name}/{method} done")
 
     # --- Figure 6.2 data: quality vs probe cost (method-level) ---
-    quality_rows: List[Dict[str, Any]] = []
-    for method in method_order:
-        acc = probe_acc[method]
-        n_sel = acc["n_sel"] or 1.0
-        recs = per_sel[method]
-        goodputs = [r["goodput"] for r in recs]
-        rewards = [r["reward"] for r in recs]
-        quality_rows.append(
-            {
-                "method": method,
-                "method_label": METHOD_LABELS.get(method, method),
-                "probe_cost_per_selection_ms": acc["probe_cost_ms"] / n_sel,
-                "probes_per_selection": acc["n_probes"] / n_sel,
-                "goodput_mean_mbps": (
-                    float(np.mean(goodputs)) if goodputs else float("nan")
-                ),
-                "reward_mean": float(np.mean(rewards)) if rewards else float("nan"),
-                "n_selections": int(acc["n_sel"]),
-            }
-        )
+    def _quality_rows_for(profile_name: str) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for method in method_order:
+            acc = probe_acc[(profile_name, method)]
+            n_sel = acc["n_sel"] or 1.0
+            recs = per_sel[(profile_name, method)]
+            goodputs = [r["goodput"] for r in recs]
+            rewards = [r["reward"] for r in recs]
+            rows.append(
+                {
+                    "method": method,
+                    "method_label": METHOD_LABELS.get(method, method),
+                    "probe_cost_per_selection_ms": acc["probe_cost_ms"] / n_sel,
+                    "probes_per_selection": acc["n_probes"] / n_sel,
+                    "goodput_mean_mbps": (
+                        float(np.mean(goodputs)) if goodputs else float("nan")
+                    ),
+                    "reward_mean": (
+                        float(np.mean(rewards)) if rewards else float("nan")
+                    ),
+                    "n_selections": int(acc["n_sel"]),
+                }
+            )
+        return rows
+
+    quality_fields = [
+        "method",
+        "method_label",
+        "probe_cost_per_selection_ms",
+        "probes_per_selection",
+        "goodput_mean_mbps",
+        "reward_mean",
+        "n_selections",
+    ]
+    quality_rows = _quality_rows_for(primary.name)
     quality_csv = out_dir / "probing_quality.csv"
-    _write_csv(
-        quality_csv,
-        [
-            "method",
-            "method_label",
-            "probe_cost_per_selection_ms",
-            "probes_per_selection",
-            "goodput_mean_mbps",
-            "reward_mean",
-            "n_selections",
-        ],
-        quality_rows,
-    )
+    _write_csv(quality_csv, quality_fields, quality_rows)
+
+    by_intent_csv = None
+    if len(profile_list) > 1:
+        by_intent_rows: List[Dict[str, Any]] = []
+        for profile in profile_list:
+            for row in _quality_rows_for(profile.name):
+                by_intent_rows.append(
+                    {
+                        "profile": profile.name,
+                        "profile_label": INTENT_LABELS.get(profile.name, profile.name),
+                        **row,
+                    }
+                )
+        by_intent_csv = out_dir / "probing_quality_by_intent.csv"
+        _write_csv(
+            by_intent_csv, ["profile", "profile_label"] + quality_fields, by_intent_rows
+        )
 
     # --- Figure 6.3 data: QoE vs congestion bin ---
     all_congestion = np.array(
-        [r["congestion"] for recs in per_sel.values() for r in recs], dtype=np.float64
+        [r["congestion"] for m in method_order for r in per_sel[(primary.name, m)]],
+        dtype=np.float64,
     )
     ceiling_rows: List[Dict[str, Any]] = []
     if all_congestion.size:
@@ -739,7 +999,7 @@ def run_probing_ceiling(
         if edges.size < 2:
             edges = np.array([all_congestion.min(), all_congestion.max() + 1e-9])
         for method in method_order:
-            recs = per_sel[method]
+            recs = per_sel[(primary.name, method)]
             if not recs:
                 continue
             cong = np.array([r["congestion"] for r in recs])
@@ -784,6 +1044,8 @@ def run_probing_ceiling(
     return {
         "quality_csv": str(quality_csv),
         "ceiling_csv": str(ceiling_csv),
+        "quality_by_intent_csv": str(by_intent_csv) if by_intent_csv else None,
+        "profiles": [p.name for p in profile_list],
         "quality_rows": quality_rows,
         "ceiling_rows": ceiling_rows,
     }

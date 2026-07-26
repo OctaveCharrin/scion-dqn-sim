@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 pytest.importorskip("torch")
@@ -229,26 +230,42 @@ def test_full_chapter6_pipeline(trained_run, tmp_path, monkeypatch):
     out_dir.mkdir()
 
     abl = ce.run_ablation(run_path, out_dir, max_pairs=3, run_context=ctx)
-    # Two conditional methods evaluated (no flat checkpoint): the naive value-only
-    # concat baseline and FiLM. The legacy 2-stream concat checkpoint is trained by
-    # the fixture (verified elsewhere) but intentionally excluded from the chapter
-    # ablation, so it must not appear here.
-    assert set(abl["methods"]) == {
+    # All three conditional variants are evaluated (the fixture trains no flat or
+    # unconditioned-scoring checkpoint), plus the per-context reward oracle.
+    # Two-Stream-Concat is the control that *can* re-rank, so excluding it would
+    # leave FiLM compared only against a variant incapable of competing.
+    expected = {
         "conditional_concat",
+        "conditional_concat_2stream",
         "conditional_film",
+        ce.ORACLE_METHOD,
     }
+    assert set(abl["methods"]) == expected
     assert Path(abl["reward_csv"]).is_file()
     assert Path(abl["divergence_csv"]).is_file()
     assert Path(abl["table_tex"]).is_file()
+    assert Path(abl["per_context_npz"]).is_file()
     div_rows = _read_rows(Path(abl["divergence_csv"]))
-    assert len(div_rows) == 2
+    assert len(div_rows) == len(expected)
     for r in div_rows:
         assert 0.0 <= float(r["behavioral_divergence"]) <= 1.0
-    # Reward matrix: 2 methods x len(INTENT_PROFILES) profiles.
+    # Reward matrix: one row per method x profile.
     n_intents = len(ce.INTENT_PROFILES)
-    assert len(_read_rows(Path(abl["reward_csv"]))) == 2 * n_intents
+    assert len(_read_rows(Path(abl["reward_csv"]))) == len(expected) * n_intents
     tex = Path(abl["table_tex"]).read_text()
     assert "\\begin{tabular}" in tex and "Conditional-FiLM" in tex
+
+    # No agent can beat a per-context argmax of the reward it is scored on.
+    rewards = {(r["method"], r["profile"]): float(r["reward_mean"]) for r in abl["reward_rows"]}
+    for method in abl["methods"]:
+        for profile in abl["profiles"]:
+            assert rewards[(method, profile)] <= rewards[(ce.ORACLE_METHOD, profile)] + 1e-9
+
+    # Per-context reward arrays are paired: same length for every method/profile.
+    with np.load(Path(abl["per_context_npz"])) as npz:
+        lengths = {arr.shape[0] for arr in npz.values()}
+        assert len(lengths) == 1
+        assert lengths.pop() == abl["n_contexts"]
 
     align = ce.run_intent_alignment(run_path, out_dir, max_pairs=3, run_context=ctx)
     matrix_rows = _read_rows(Path(align["matrix_csv"]))
@@ -272,3 +289,73 @@ def test_full_chapter6_pipeline(trained_run, tmp_path, monkeypatch):
     }
     for path in figs.values():
         assert Path(path).is_file() and Path(path).stat().st_size > 0
+
+
+def test_scoring_nets_are_permutation_equivariant():
+    """The chosen *path* must not depend on the order paths are presented in.
+
+    This is the structural claim behind Contribution 2 (a shared per-path scorer
+    replacing a fixed-action DQN) and is what lets one model serve a variable
+    candidate count without padding.
+    """
+    import torch
+
+    from src.rl.dqn_agent_enhanced import EnhancedDQNConfig
+    from src.rl.dqn_agent_scoring_conditional import (
+        ConditionalPathScoringDQNAgent,
+        ValueConcatConditionalPathScoringDQNAgent,
+    )
+    from src.rl.dqn_agent_scoring_enhanced import EnhancedPathScoringDQNAgent
+
+    cfg = EnhancedDQNConfig(hidden_dim=32, n_hidden_layers=2, dropout_rate=0.0)
+    rng = np.random.default_rng(0)
+    torch.manual_seed(0)
+
+    agents = [
+        EnhancedPathScoringDQNAgent(global_dim=7, path_dim=7, config=cfg),
+        ConditionalPathScoringDQNAgent(global_dim=12, path_dim=7, config=cfg),
+        ValueConcatConditionalPathScoringDQNAgent(global_dim=12, path_dim=7, config=cfg),
+    ]
+    for agent in agents:
+        agent.epsilon = 0.0
+        agent.q_network.eval()
+        n_paths = 9
+        for _ in range(5):
+            paths = rng.normal(size=(n_paths, 7)).astype(np.float32)
+            glob = rng.normal(size=(agent.global_dim,)).astype(np.float32)
+            base = int(agent.act({"global": glob, "paths": paths}, evaluate=True))
+            for _ in range(4):
+                perm = rng.permutation(n_paths)
+                j = int(
+                    agent.act({"global": glob, "paths": paths[perm]}, evaluate=True)
+                )
+                assert int(perm[j]) == base
+
+
+def test_set_global_seeds_makes_training_reproducible(tmp_path):
+    """Two runs at the same seed must produce identical episode rewards."""
+    ctx = _build_context()
+    hp_a = _tiny_hp()
+    hp_a.seed = 4242
+    hp_b = _tiny_hp()
+    hp_b.seed = 4242
+    hp_c = _tiny_hp()
+    hp_c.seed = 99
+
+    def _train(hp, name):
+        run_dir = tmp_path / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return train_conditional_scoring_dqn(
+            run_dir,
+            hp,
+            num_episodes=6,
+            episode_length=2,
+            run_context=ctx,
+            quiet=True,
+        )["episode_rewards"]
+
+    a = _train(hp_a, "a")
+    b = _train(hp_b, "b")
+    c = _train(hp_c, "c")
+    assert a == b
+    assert a != c  # a different seed must actually change the run

@@ -37,7 +37,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--metric",
-        choices=["goodput", "reward"],
+        choices=["goodput", "reward", "both"],
         default="goodput",
         help="QoE metric for Figs 6.2/6.3 (default: goodput).",
     )

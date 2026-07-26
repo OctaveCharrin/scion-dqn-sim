@@ -152,6 +152,20 @@ _cond_path = run_path / "dqn_conditional_scoring_model.pth"
 _cond_ckpt = _load_checkpoint(_cond_path)
 if _cond_ckpt:
     conditional_dqn_agent = load_conditional_scoring_agent(_cond_ckpt)
+    conditional_dqn_agent.epsilon = 0.0  # checkpoint epsilon is the training value
+
+# Deterministic greedy evaluation. EnhancedDQNAgent.act does not toggle eval mode
+# itself, so without this the flat DQN is scored with dropout 0.1 live and is not
+# comparable to the Chapter 6 harness (which does call .eval()).
+for _agent in (
+    dqn_agent,
+    simple_dqn_agent,
+    scoring_simple_dqn_agent,
+    scoring_enhanced_dqn_agent,
+    conditional_dqn_agent,
+):
+    if _agent is not None:
+        _agent.q_network.eval()
 
 env.reward_weights = reward_weights
 
@@ -174,6 +188,7 @@ results: Dict[str, Dict] = defaultdict(
         "bandwidth_probes": 0,
         "total_probe_time_ms": 0.0,
         "selection_times_ms": [],
+        "inference_times_ms": [],
     }
 )
 
@@ -190,7 +205,13 @@ if conditional_dqn_agent is not None:
     _nn_methods.append(("conditional_dqn", conditional_dqn_agent))
 
 
-def _record_step(method_results: Dict, info: Dict, reward: float, selection_time_ms: float) -> None:
+def _record_step(
+    method_results: Dict,
+    info: Dict,
+    reward: float,
+    selection_time_ms: float,
+    inference_time_ms: float,
+) -> None:
     pm = info["path_metrics"]
     method_results["rewards"].append(reward)
     method_results["latencies"].append(float(pm.get("latency_ms", 50.0)))
@@ -198,6 +219,10 @@ def _record_step(method_results: Dict, info: Dict, reward: float, selection_time
     method_results["bandwidths"].append(float(bw_val) if bw_val is not None else 0.0)
     method_results["losses"].append(float(pm.get("loss_rate", 0.0)))
     method_results["selection_times_ms"].append(selection_time_ms)
+    # ``selection_time_ms`` spans reset->step and so includes the simulator's
+    # per-path probing loop; ``inference_time_ms`` is the decision alone, which
+    # is the quantity a deployability argument needs.
+    method_results["inference_times_ms"].append(inference_time_ms)
 
 
 print("\nEvaluating methods...")
@@ -221,7 +246,9 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
             if method_name == "dqn":
                 state = env.observe_flat()
                 mask = env.action_mask(action_dim)
+                _t = time.perf_counter()
                 action = int(dqn_agent.act(state, action_mask=mask))
+                inference_ms = (time.perf_counter() - _t) * 1000.0
                 if action >= len(paths):
                     valid = np.where(mask)[0]
                     action = int(valid[0]) if len(valid) > 0 else 0
@@ -232,7 +259,9 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
 
             elif method_name == "simple_dqn":
                 state = env.observe_flat()
+                _t = time.perf_counter()
                 action = int(simple_dqn_agent.act(state))
+                inference_ms = (time.perf_counter() - _t) * 1000.0
                 if action >= len(paths):
                     action = 0
                 reward, _, info = env.apply_action(action, probe="full")
@@ -245,7 +274,9 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
                 if state_d["paths"].shape[0] == 0:
                     pbar.update(1)
                     continue
+                _t = time.perf_counter()
                 action = int(method.act(state_d, evaluate=True))
+                inference_ms = (time.perf_counter() - _t) * 1000.0
                 if action >= len(paths):
                     action = 0
                 reward, _, info = env.apply_action(action, probe="full")
@@ -258,7 +289,9 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
                 if state_d["paths"].shape[0] == 0:
                     pbar.update(1)
                     continue
+                _t = time.perf_counter()
                 action = int(conditional_dqn_agent.act(state_d, evaluate=True))
+                inference_ms = (time.perf_counter() - _t) * 1000.0
                 if action >= len(paths):
                     action = 0
                 reward, _, info = env.apply_action(action, probe="full")
@@ -281,14 +314,25 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
                     n_probes_step += 1
                     path_metrics_list.append(m)
 
-                flow_stub = {"src": int(pair[0]), "dst": int(pair[1])}
+                # ECMPSelector hashes (source_as, destination_as, flow_id); without
+                # these keys every pair and hour hashed to the same constant and the
+                # baseline did no equal-cost spreading at all.
+                flow_stub = {
+                    "src": int(pair[0]),
+                    "dst": int(pair[1]),
+                    "source_as": int(pair[0]),
+                    "destination_as": int(pair[1]),
+                    "flow_id": int(hour_idx),
+                }
                 state_stub = np.zeros(1, dtype=np.float32)
+                _t = time.perf_counter()
                 if method_name == "random":
                     action = int(np.random.choice(len(paths)))
                 else:
                     action = int(
                         method.select_path(paths, path_metrics_list, flow_stub, state_stub)
                     )
+                inference_ms = (time.perf_counter() - _t) * 1000.0
                 _, reward, _, info = env.step(
                     action,
                     step_probe_cost_ms=step_probe_cost,
@@ -296,7 +340,13 @@ for method_name, method in _nn_methods + list(baseline_methods.items()):
                 )
                 method_results["total_probe_time_ms"] += step_probe_cost
 
-            _record_step(method_results, info, reward, (time.time() - t0) * 1000.0)
+            _record_step(
+                method_results,
+                info,
+                reward,
+                (time.time() - t0) * 1000.0,
+                inference_ms,
+            )
             pbar.update(1)
     pbar.close()
 
@@ -315,6 +365,7 @@ for method_name, method_results in results.items():
     latencies = np.array(method_results["latencies"])
     bandwidths = np.array(method_results["bandwidths"])
     selection_times = np.array(method_results["selection_times_ms"])
+    inference_times = np.array(method_results["inference_times_ms"])
     probe_time = float(method_results["total_probe_time_ms"])
     n_selections = max(1, len(method_results["rewards"]))
 
@@ -335,6 +386,10 @@ for method_name, method_results in results.items():
         "total_probe_time_ms": probe_time,
         "avg_probe_time_per_selection": probe_time / n_selections,
         "avg_selection_time_ms": float(np.mean(selection_times)),
+        "avg_inference_time_ms": float(np.mean(inference_times)),
+        "p50_inference_time_ms": float(np.percentile(inference_times, 50)),
+        "p95_inference_time_ms": float(np.percentile(inference_times, 95)),
+        "p99_inference_time_ms": float(np.percentile(inference_times, 99)),
         "n_selections": int(n_selections),
     }
     s = summary[method_name]

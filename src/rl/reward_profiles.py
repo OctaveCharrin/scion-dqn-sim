@@ -94,9 +94,43 @@ DISTINCTIVE_REWARD_PROFILES: List[RewardProfile] = [
     ),
 ]
 
+# Candidate replacements for the two intents that turn out not to discriminate.
+# Measurement showed ``loss_averse`` and ``balanced_extreme`` produce near-identical
+# selections, because ~99% of chosen paths have zero loss and the loss-optimal path
+# coincides with the latency-optimal one 83% of the time. These push harder on the
+# only two axes the reward exposes besides goodput: hop count (via the per-hop probe
+# charge) and pure loss. Selected with ``DQN_CONDITIONAL_PROFILES=conflicting``.
+_EXTRA_PROFILES: List[RewardProfile] = [
+    RewardProfile(
+        "probe_extreme",
+        RewardWeights(w1=0.7, w2=0.3, w3=0.5, w4=0.5, w_probe=0.8),
+        "Hop-averse: probe cost grows per hop, so this favours short paths.",
+    ),
+    RewardProfile(
+        "loss_only",
+        RewardWeights(w1=0.05, w2=0.95, w3=1.0, w4=0.0, w_probe=0.05),
+        "Loss avoidance with no latency term at all (unlike loss_averse).",
+    ),
+]
+
 _PROFILE_BY_NAME: Dict[str, RewardProfile] = {
-    p.name: p for p in (*REWARD_PROFILES, *DISTINCTIVE_REWARD_PROFILES)
+    p.name: p
+    for p in (*REWARD_PROFILES, *DISTINCTIVE_REWARD_PROFILES, *_EXTRA_PROFILES)
 }
+
+# ``DQN_CONDITIONAL_PROFILES=conflicting`` swaps the two intents measurement showed
+# do not discriminate (``loss_averse``, ``probe_averse``) for the two above.
+CONFLICTING_REWARD_PROFILES: List[RewardProfile] = [
+    _PROFILE_BY_NAME[name]
+    for name in (
+        "bandwidth_max",
+        "delay_averse",
+        "balanced_extreme",
+        "probe_extreme",
+        "loss_only",
+        "probe_minimal",
+    )
+]
 
 
 def get_profile(name: str) -> RewardProfile:
@@ -120,6 +154,8 @@ def get_conditional_training_profiles() -> List[RewardProfile]:
     mode = os.environ.get("DQN_CONDITIONAL_PROFILES", "distinctive").strip().lower()
     if mode in ("legacy", "eval", "standard"):
         return list(REWARD_PROFILES)
+    if mode == "conflicting":
+        return list(CONFLICTING_REWARD_PROFILES)
     if mode == "all":
         merged: Dict[str, RewardProfile] = {p.name: p for p in REWARD_PROFILES}
         for p in DISTINCTIVE_REWARD_PROFILES:

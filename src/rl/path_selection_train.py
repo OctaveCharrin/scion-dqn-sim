@@ -40,6 +40,7 @@ from src.simulation.evaluation_env import (
     get_conditional_weight_encoding,
     set_conditional_weight_encoding,
 )
+from src.rl.seeding import set_global_seeds
 from src.simulation.run_context import compute_action_dim, load_run_context, make_env
 
 FlatVariant = Literal["enhanced", "simple"]
@@ -88,6 +89,7 @@ class ScoringHyperparams:
     n_hidden_layers: int = 2
     tau: float = 0.05
     use_prioritized_replay: bool = True
+    seed: Optional[int] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ScoringHyperparams":
@@ -108,6 +110,7 @@ class ScoringHyperparams:
             "DQN_HIDDEN_DIM": ("hidden_dim", int),
             "DQN_N_HIDDEN": ("n_hidden_layers", int),
             "DQN_TAU": ("tau", float),
+            "DQN_SEED": ("seed", int),
         }
         for env_key, (attr, cast) in mapping.items():
             val = os.environ.get(env_key, "").strip()
@@ -124,7 +127,9 @@ def train_flat_dqn(
     checkpoint_path: Optional[Path] = None,
     stats_path: Optional[Path] = None,
     run_context: Optional[Tuple] = None,
+    seed: Optional[int] = None,
 ) -> Dict[str, Any]:
+    set_global_seeds(seed)
     if run_context is None:
         run_context = load_run_context(run_path)
     topology_data, path_store, link_states, pair_pool, goodput_cap = run_context
@@ -301,6 +306,7 @@ def train_scoring_dqn(
     quiet: bool = False,
     run_context: Optional[Tuple] = None,
 ) -> Dict[str, Any]:
+    set_global_seeds(hp.seed)
     if run_context is None:
         run_context = load_run_context(run_path)
     topology_data, path_store, link_states, pair_pool, goodput_cap = run_context
@@ -493,6 +499,7 @@ def train_conditional_scoring_dqn(
             f"expected one of {valid_archs}"
         )
     hp = hp or ScoringHyperparams.from_env()
+    set_global_seeds(hp.seed)
     if run_context is None:
         run_context = load_run_context(run_path)
     topology_data, path_store, link_states, pair_pool, goodput_cap = run_context

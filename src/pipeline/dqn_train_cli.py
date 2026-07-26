@@ -66,6 +66,14 @@ def build_train_parser(description: str) -> argparse.ArgumentParser:
         default=None,
         help="Override training stats JSON path (scoring trainers only).",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Seed torch/numpy/random for a reproducible run (also DQN_SEED). "
+        "Environment pair/hour/profile RNGs stay fixed so only the learning "
+        "process varies across seeds.",
+    )
     return parser
 
 
@@ -108,6 +116,7 @@ def run_flat_training(
         num_episodes=episodes_from_env(),
         checkpoint_path=args.checkpoint,
         stats_path=args.stats_json,
+        seed=args.seed,
     )
     print_training_summary(stats, title=title, run_path=run_path)
 
@@ -120,6 +129,8 @@ def run_scoring_training(
     args = build_train_parser(title).parse_args(argv)
     run_path = resolve_train_run_path(args.run_dir)
     hp = scoring_hyperparams(args.config_json)
+    if args.seed is not None:
+        hp.seed = args.seed
     ckpt = args.checkpoint or run_path / _SCORING_CHECKPOINTS[variant]
     stats_path = args.stats_json or run_path / _SCORING_STATS[variant]
     stats = train_scoring_dqn(
@@ -171,6 +182,8 @@ def run_conditional_training(
     args = build_train_parser(title).parse_args(argv)
     run_path = resolve_train_run_path(args.run_dir)
     hp = scoring_hyperparams(args.config_json)
+    if args.seed is not None:
+        hp.seed = args.seed
     stats = train_conditional_scoring_dqn(
         run_path,
         hp,

@@ -608,6 +608,64 @@ class EvaluationPathSelectionEnv:
         )
         return reward, done, info
 
+    def path_metrics_snapshot(self) -> List[Dict[str, Any]]:
+        """Metric dicts for every currently available path, at the current hour."""
+        return [self._path_metrics_at(i) for i in range(len(self.available_paths))]
+
+    def max_path_bandwidth(self) -> float:
+        """Best achievable bandwidth over the candidate set at the current hour."""
+        return self._max_path_bandwidth_at_current_hour()
+
+    def evaluate_action(
+        self,
+        action: int,
+        *,
+        probe: Literal["none", "latency", "full"] = "full",
+        max_possible_bw: Optional[float] = None,
+    ) -> Tuple[float, Dict[str, Any]]:
+        """Score ``action`` at the current hour *without* advancing the clock.
+
+        Reward math is identical to ``apply_action``; the difference is that the
+        episode clock and link states are left untouched, so several policies --
+        or the same policy under several intents -- can be scored on one
+        identical decision context after a single ``reset``. Pass
+        ``max_possible_bw`` to reuse a normalizer already computed for the
+        context instead of recomputing it per call.
+        """
+        step_probe_cost = 0.0
+        num_probes = 0
+        if probe == "full":
+            self.probe_path_full(action)
+            step_probe_cost = self.last_probe_cost_ms
+            num_probes = 1
+        elif probe == "latency":
+            self.probe_path_latency(action)
+            step_probe_cost = self.last_probe_cost_ms
+            num_probes = 1
+
+        path_metrics = self._path_metrics_at(action)
+        if max_possible_bw is None:
+            max_possible_bw = self._max_path_bandwidth_at_current_hour()
+        reward = self.compute_reward(
+            path_metrics,
+            max_possible_bw=max_possible_bw,
+            probe_cost_ms=step_probe_cost,
+            num_probes_in_step=max(1, num_probes),
+        )
+        info = {
+            "path_metrics": path_metrics,
+            "max_available_path_bw": max_possible_bw,
+            "reward": reward,
+            "selection_hour_idx": self.hour_idx,
+            "step_probe_cost_ms": float(step_probe_cost),
+            "effective_probe_cost_ms": self._effective_probe_cost_ms(
+                step_probe_cost, max(1, num_probes)
+            ),
+            "num_probes_in_step": max(1, num_probes),
+            "action": int(action),
+        }
+        return reward, info
+
     def num_paths(self) -> int:
         return len(self.available_paths)
 
