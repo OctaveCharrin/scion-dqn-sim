@@ -144,6 +144,44 @@ uv run python eval_conditional_dqn_rewards.py run_YYYYMMDD_HHMMSS
 uv run python analyze_conditional_sensitivity.py run_YYYYMMDD_HHMMSS
 ```
 
+## Seed sweeps (Chapter 4)
+
+Every Chapter 4 result is reported as a mean with a 95% confidence interval over
+five *training* seeds. Only torch/numpy/random are reseeded — the environment's
+pair, hour and profile streams stay fixed, so each seed sees the identical stream
+of training contexts and is graded on the same 10752 held-out decision contexts
+(32 pairs × 336 hours). Four rungs are seeded: Flat DQN, the unconditioned
+Scoring DQN, Value-Concat, and Two-Stream-Concat. FiLM was dropped from the
+thesis and is not trained or reported.
+
+```bash
+# 1. Retrain the ladder under seeds 1..5 and re-run the ablation on each.
+./run_seed_sweep.sh run_YYYYMMDD_HHMMSS
+
+# 2. Re-run the chapter's other five results per seed (intent alignment,
+#    zero-shot interpolation, path-count scaling + order invariance, probing
+#    overhead, congestion ceiling). Loads the run context once for all seeds.
+uv run python run_seed_result_sweep.py run_YYYYMMDD_HHMMSS
+
+# 3. Aggregate to means with CIs and test whether each claim survives.
+uv run python analyze_seed_results.py run_YYYYMMDD_HHMMSS
+
+# 4. Redraw the six thesis figures with the spread shown, and install them.
+uv run python plot_seed_figures.py run_YYYYMMDD_HHMMSS --copy-to ~/thesis-report/figures
+```
+
+| Script | Output |
+|--------|--------|
+| `run_seed_sweep.sh` | `seeds/seed<N>/` — checkpoints + `ablation/` |
+| `run_seed_result_sweep.py` | `seeds/seed<N>/shipped/{intent,zeroshot,pathcount,probing}/` |
+| `analyze_seed_variance.py` | `gap/stats/seed_variance.json`, `significance.json` (ablation) |
+| `analyze_seed_results.py` | `seeds/aggregate/*.csv`, `claims.json` (the other five results) |
+| `plot_seed_figures.py` | `seeds/aggregate/figures/p1eval_*.png` |
+
+`run_seed_result_sweep.py` is idempotent — a study whose CSVs already exist is
+skipped, so it can be re-run to fill in a newly added seed. Pass `--force` to
+recompute.
+
 ## Tests
 
 From the repository root:

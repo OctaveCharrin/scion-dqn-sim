@@ -194,8 +194,10 @@ def main() -> None:
         with open(out_dir / "significance.json", "w") as f:
             json.dump(sig, f, indent=2)
         print(f"\nPaired Wilcoxon over {npz_path}")
+        # stdout shows comparisons involving the shipped agent; the JSON has all pairs.
+        shipped = "conditional_concat_2stream"
         for c in sig["comparisons"]:
-            if "film" not in c["method_a"] and "film" not in c["method_b"]:
+            if shipped not in (c["method_a"], c["method_b"]):
                 continue
             flag = "*" if c["significant_at_0.05"] else " "
             print(

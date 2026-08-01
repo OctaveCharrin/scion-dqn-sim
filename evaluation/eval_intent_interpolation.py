@@ -76,8 +76,12 @@ def run_sweep(
     hour_stride: int,
     pairs: Optional[Sequence[Tuple[int, int]]],
     progress=print,
+    run_context: Optional[tuple] = None,
 ) -> Dict[str, Any]:
-    topology_data, path_store, link_states, pair_pool, _cap = load_run_context(run_path)
+    # ``run_context`` lets a caller (the seed sweep) load the ~180 MB path store
+    # once and evaluate every seed's checkpoints on the identical contexts.
+    ctx = run_context or load_run_context(run_path)
+    topology_data, path_store, link_states, pair_pool, _cap = ctx
     eval_pairs = _eval_pairs(pair_pool, max_pairs, pairs)
     hours = EVAL_HOURS[:: max(1, hour_stride)]
 
