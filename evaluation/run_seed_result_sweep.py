@@ -1,26 +1,5 @@
 #!/usr/bin/env python3
-"""Re-run Chapter 4's per-result studies once per training seed.
-
-``run_seed_sweep.sh`` retrains the four-rung ladder under N seeds and re-runs the
-*ablation* on each. Everything else in the chapter -- the intent-alignment matrix
-and the chosen-path metric distributions, the zero-shot interpolation sweep, the
-path-count / order-invariance study, and the probing + single-path-ceiling
-comparison -- was read from one reference training run. This script points those
-four studies at every seed's checkpoints so each can be reported as a mean with a
-confidence interval over seeds, matching the protocol of ``tab:p1eval:seeds``.
-
-Two properties make the per-seed numbers comparable, and both are enforced here
-rather than assumed:
-
-* **One environment.** The run context (topology, path store, link states, pair
-  pool) is loaded once and handed to every study of every seed, so all five are
-  graded on the identical 10752 held-out decision contexts (32 pairs x 336 hours,
-  the last 14 days). It is also the reason this is affordable: the path store
-  alone is ~180 MB.
-* **No FiLM.** The thesis dropped the FiLM variant on 2026-07-26, but the seed
-  directories still hold its checkpoints. Each seed is evaluated through a
-  staging directory that links only the four rungs the thesis reports, so a FiLM
-  checkpoint on disk cannot leak into a reported number.
+"""Re-run seed-specific per-result studies once per training seed.
 
 Writes ``<run>/seeds/seed<N>/shipped/{intent,zeroshot,pathcount,probing}/``.
 Aggregate the result with ``analyze_seed_results.py``.
@@ -39,7 +18,7 @@ from typing import Any, Dict, List, Sequence
 import eval_intent_interpolation as interp
 import eval_pathcount_scaling as pathcount
 
-from src.pipeline.chapter6_eval import (
+from src.pipeline.intent_cond_eval import (
     CONDITIONAL_CHECKPOINTS,
     INTENT_PROFILES,
     MAX_EVAL_PAIRS,
@@ -241,7 +220,7 @@ def main() -> None:
     if not seed_dirs:
         raise SystemExit(f"No seed directories under {seeds_dir}.")
 
-    print(f"Per-seed Chapter 4 results on {run_path}")
+    print(f"Per-seed results on {run_path}")
     print(f"  agent:   {SHIPPED_AGENT} (FiLM excluded by staging)")
     print(f"  seeds:   {', '.join(d.name for d in seed_dirs)}")
     print(f"  studies: {', '.join(args.studies)}")

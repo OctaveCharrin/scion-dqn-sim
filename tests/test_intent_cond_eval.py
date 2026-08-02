@@ -1,8 +1,8 @@
-"""Integration test for the Chapter 6 pipeline (intent conditioning + ceiling).
+"""Integration test for the pipeline (intent conditioning + ceiling).
 
 Fabricates a tiny in-memory run context (no BRITE / no traffic sim), trains a
 Conditional-FiLM and a Conditional-Concat model for a handful of episodes, then
-runs the three chapter-6 evaluations and renders the figures. Verifies the
+runs the three evaluations and renders the figures. Verifies the
 concat trainer emits the ``dueling_concat`` architecture and that every CSV /
 LaTeX / PNG artifact is produced and well-formed.
 """
@@ -17,8 +17,8 @@ import pytest
 
 pytest.importorskip("torch")
 
-from src.pipeline import chapter6_eval as ce
-from src.pipeline import chapter6_figures as cf
+from src.pipeline import intent_cond_eval as ce
+from src.pipeline import intent_cond_figures as cf
 from src.rl.dqn_agent_scoring_conditional import (
     CONDITIONAL_ARCH_LEGACY,
     CONDITIONAL_ARCH_VALUE_CONCAT,
@@ -223,10 +223,10 @@ def test_value_concat_argmax_is_intent_invariant():
     assert bool((diff - diff[:, :1]).abs().max() < 1e-5)
 
 
-def test_full_chapter6_pipeline(trained_run, tmp_path, monkeypatch):
+def test_full_intent_cond_pipeline(trained_run, tmp_path, monkeypatch):
     run_path, ctx, *_ = trained_run
     monkeypatch.setattr(ce, "EVAL_HOURS", _EVAL_HOURS)
-    out_dir = tmp_path / "chapter6_test"
+    out_dir = tmp_path / "intent_cond_test"
     out_dir.mkdir()
 
     abl = ce.run_ablation(run_path, out_dir, max_pairs=3, run_context=ctx)

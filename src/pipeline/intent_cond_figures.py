@@ -1,17 +1,3 @@
-"""Publication figures for Chapter 6 (intent conditioning + single-path ceiling).
-
-Reads the CSVs produced by ``src.pipeline.chapter6_eval`` and renders Figures
-6.1 (intent alignment heatmap + selection-metric boxplots), 6.2 (selection
-quality vs probing cost), and 6.3 (application performance vs congestion, the
-single-path ceiling).
-
-Colours use the colorblind-safe Okabe-Ito categorical set (validated with the
-dataviz palette checker) for methods/intents and a CVD-safe sequential map
-(``cividis``) for the reward heatmap. Marker shape is a redundant (non-colour)
-encoding of method so the figures survive greyscale printing. Styling reuses the
-LNCS look from ``src.pipeline.figures``.
-"""
-
 from __future__ import annotations
 
 import csv
@@ -24,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-from src.pipeline.chapter6_eval import (
+from src.pipeline.intent_cond_eval import (
     INTENT_LABELS,
     INTENT_PROFILES,
     METHOD_LABELS,
@@ -669,7 +655,7 @@ def plot_pathcount_scaling(csv_path: Path, out_path: Path) -> Path:
 def generate_all_figures(
     artifact_dir: Path, fig_dir: Optional[Path] = None, *, metric: str = "goodput"
 ) -> Dict[str, str]:
-    """Render all Chapter 6 figures from the CSVs in ``artifact_dir``."""
+    """Render all figures from the CSVs in ``artifact_dir``."""
     fig_dir = fig_dir or (artifact_dir / "figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
     outputs: Dict[str, str] = {}

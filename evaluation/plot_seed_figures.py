@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Render the six Chapter 4 figures with the across-seed spread and, optionally,
+"""Render the six figures with the across-seed spread and, optionally,
 install them into the thesis figure directory under their existing names.
 
-The single-run versions are produced by ``06b_generate_chapter6_figures.py``;
+The single-run versions are produced by ``06b_generate_intent_cond_figures.py``;
 these read the aggregates from ``analyze_seed_results.py`` instead. Filenames are
 kept identical (``p1eval_*.png``) so the thesis picks them up with no edit to any
 ``\\includegraphics``.
@@ -17,7 +17,7 @@ import argparse
 import shutil
 from pathlib import Path
 
-from src.pipeline.chapter4_seed_figures import generate_seed_figures
+from src.pipeline.five_seed_figures import generate_seed_figures
 from src.pipeline.run_dirs import resolve_run_dir
 
 
@@ -49,7 +49,7 @@ def main() -> None:
         raise SystemExit(f"No aggregates in {agg}. Run analyze_seed_results.py first.")
 
     figs = generate_seed_figures(agg, args.fig_dir)
-    print(f"Seeded Chapter 4 figures from {agg}")
+    print(f"Seeded figures from {agg}")
     for name, path in figs.items():
         print(f"  {name}: {path}")
 

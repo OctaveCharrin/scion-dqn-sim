@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""Variable path sets: quality vs candidate count, and order invariance
-(Chapter 4, sec:p1eval:dynamic).
-
-The permutation-equivariant scoring architecture is the second contribution and
-the stated reason for abandoning the fixed-action DQN, but no result in the
-chapter is broken down by candidate-path count, so the claim rests on the
-architecture's construction alone. Binning the run by its *natural* N is
-uninformative -- 7988 of 8010 pairs have exactly 30 paths -- so instead we
-restrict the candidate set at decision time to N in {2, 4, 8, 16, 30} and report
-selection quality per N. That tests the actual claim: one model, no retraining,
-no padding, across an order of magnitude in N.
-
-We also test order invariance directly: re-score the identical context under
-random permutations of the path ordering and check the *same underlying path* is
-chosen. A scoring architecture must be exactly invariant; the flat agent, whose
-action is an index into a padded vector, need not be.
-
-Writes ``pathcount_scaling.csv``, ``order_invariance.json`` and a figure.
+"""Variable path sets: quality vs candidate count, and order invariance.
 """
 
 from __future__ import annotations
@@ -29,7 +12,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from src.pipeline.chapter6_eval import (
+from src.pipeline.intent_cond_eval import (
     EVAL_HOURS,
     MAX_EVAL_PAIRS,
     METHOD_LABELS,

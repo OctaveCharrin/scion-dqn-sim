@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Probing overhead and single-path performance ceiling (Chapter 6, Figs 6.2/6.3).
-
-Compares one conditional agent (``--agent``) against heuristics (Shortest-Path,
-Widest-Path, Lowest-Latency, ECMP, SCION-Default, Random). Writes ``probing_quality.csv``
-(quality vs probe cost) and ``ceiling_by_congestion.csv`` (QoE vs realized
-congestion) into an output directory (default: ``<run>/chapter6_latest``); with
-several ``--profiles`` it also writes ``probing_quality_by_intent.csv``.
+"""Probing overhead and single-path performance ceiling.
 """
 
 from __future__ import annotations
@@ -14,7 +8,7 @@ import argparse
 import json
 from pathlib import Path
 
-from src.pipeline.chapter6_eval import (
+from src.pipeline.intent_cond_eval import (
     CONDITIONAL_CHECKPOINTS,
     DEFAULT_CONDITIONAL_AGENT,
     MAX_EVAL_PAIRS,
@@ -30,7 +24,7 @@ def main() -> None:
         "--out-dir",
         type=Path,
         default=None,
-        help="Artifact output dir (default: <run>/chapter6_latest).",
+        help="Artifact output dir (default: <run>/intent_cond_latest).",
     )
     parser.add_argument("--max-pairs", type=int, default=MAX_EVAL_PAIRS)
     parser.add_argument("--congestion-bins", type=int, default=6)
@@ -56,7 +50,7 @@ def main() -> None:
     args = parser.parse_args()
 
     run_path = Path(args.run_dir or resolve_run_dir())
-    out_dir = args.out_dir or (run_path / "chapter6_latest")
+    out_dir = args.out_dir or (run_path / "intent_cond_latest")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     pairs = None

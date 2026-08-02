@@ -1,7 +1,7 @@
-"""Tests for the Chapter 4 across-seed aggregation.
+"""Tests for the across-seed aggregation.
 
 The aggregation is what turns five per-seed evaluations into the intervals the
-chapter reports, so the two things worth pinning down are that a group's rows are
+study reports, so the two things worth pinning down are that a group's rows are
 matched across seeds by key rather than by position, and that the per-seed values
 kept alongside the interval are the values the interval was computed from -- the
 figures draw their traces from that column, so a mismatch would put a picture and

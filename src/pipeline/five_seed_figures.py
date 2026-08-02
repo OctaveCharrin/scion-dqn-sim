@@ -1,24 +1,3 @@
-"""Chapter 4 figures redrawn with the spread over five training seeds.
-
-The single-run versions of these six figures live in ``chapter6_figures``. This
-module renders the same six from the aggregate CSVs written by
-``evaluation/analyze_seed_results.py``, showing the across-seed spread rather
-than one run's curve -- as a 95% confidence band, an error bar, or per-seed
-traces, whichever keeps the mark readable on that figure's axes.
-
-Two conventions are used throughout and stated in the figures themselves:
-
-* The heuristics are deterministic given the environment, so they carry no seed
-  spread at all. Only the learned selector's marks have intervals, and that
-  asymmetry is a fact about the comparison rather than a gap in the plot.
-* Where a claim is quantitative -- the intent-alignment diagonal winning a
-  column -- the figure shows whether the margin's interval clears zero, so a
-  reader cannot take a win from the colouring that the spread does not support.
-
-Palette, markers and LNCS styling are inherited unchanged from
-``chapter6_figures`` so these drop into the chapter beside the unseeded figures.
-"""
-
 from __future__ import annotations
 
 import csv
@@ -33,12 +12,12 @@ import matplotlib.pyplot as plt  # noqa: E402
 import matplotlib.ticker  # noqa: E402
 import numpy as np  # noqa: E402
 
-from src.pipeline.chapter6_eval import (  # noqa: E402
+from src.pipeline.intent_cond_eval import (  # noqa: E402
     INTENT_LABELS,
     INTENT_PROFILES,
     METHOD_LABELS,
 )
-from src.pipeline.chapter6_figures import (  # noqa: E402
+from src.pipeline.intent_cond_figures import (  # noqa: E402
     CH6_METHOD_COLORS,
     CH6_METHOD_MARKERS,
     INTENT_COLORS,
@@ -233,7 +212,7 @@ def plot_intent_boxplots_seeds(
     """Chosen-path metric distributions per intent, with each seed's mean marked.
 
     The box bodies pool every selection from every seed, which is the
-    distribution the chapter describes; the overlaid dots are the five per-seed
+    distribution described; the overlaid dots are the five per-seed
     means, so a reader sees at once whether the separation between intents is
     larger than the separation between training runs.
     """
@@ -340,7 +319,7 @@ def plot_intent_boxplots_seeds(
             for median in bp["medians"]:
                 median.set_color("black")
 
-        # Per-seed means: the spread the chapter is being asked to report.
+        # Per-seed means:
         for pos, name in zip(positions, INTENT_PROFILES):
             vals = seedvals(summary[name], summary_col)
             ax.scatter(
@@ -598,7 +577,7 @@ def plot_probing_seeds(quality_csv: Path, out_path: Path) -> Path:
 def plot_ceiling_seeds(ceiling_csv: Path, out_path: Path) -> Path:
     """Goodput and reward against realized congestion, with seed bands.
 
-    The two panels are the chapter's bridging argument: the goodput ceiling
+    The two panels are bridging argument: the goodput ceiling
     descends while the reward stays flat. Both are drawn with the across-seed
     band so the descent can be compared against the run-to-run spread rather
     than taken from one curve.
@@ -673,7 +652,7 @@ THESIS_FIGURES = {
 def generate_seed_figures(
     aggregate_dir: Path, fig_dir: Optional[Path] = None
 ) -> Dict[str, str]:
-    """Render all six seeded Chapter 4 figures from ``aggregate_dir``."""
+    """Render all six seeded figures from ``aggregate_dir``."""
     fig_dir = fig_dir or (aggregate_dir / "figures")
     fig_dir.mkdir(parents=True, exist_ok=True)
     claims = aggregate_dir / "claims.json"

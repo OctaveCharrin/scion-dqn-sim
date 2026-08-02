@@ -144,9 +144,9 @@ uv run python eval_conditional_dqn_rewards.py run_YYYYMMDD_HHMMSS
 uv run python analyze_conditional_sensitivity.py run_YYYYMMDD_HHMMSS
 ```
 
-## Seed sweeps (Chapter 4)
+## Seed sweeps
 
-Every Chapter 4 result is reported as a mean with a 95% confidence interval over
+Every result is reported as a mean with a 95% confidence interval over
 five *training* seeds. Only torch/numpy/random are reseeded — the environment's
 pair, hour and profile streams stay fixed, so each seed sees the identical stream
 of training contexts and is graded on the same 10752 held-out decision contexts
@@ -158,7 +158,7 @@ thesis and is not trained or reported.
 # 1. Retrain the ladder under seeds 1..5 and re-run the ablation on each.
 ./run_seed_sweep.sh run_YYYYMMDD_HHMMSS
 
-# 2. Re-run the chapter's other five results per seed (intent alignment,
+# 2. Re-run the other five results per seed (intent alignment,
 #    zero-shot interpolation, path-count scaling + order invariance, probing
 #    overhead, congestion ceiling). Loads the run context once for all seeds.
 uv run python run_seed_result_sweep.py run_YYYYMMDD_HHMMSS

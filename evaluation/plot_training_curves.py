@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""Training curves for the single-path agents (thesis appendix, app:extra).
-
-No convergence evidence appears anywhere in the thesis, although the data is
-fully saved. This renders episode reward and training loss for every agent in a
-run, plus per-intent learning curves for the conditional agents -- the stratified
-profile schedule labels each episode with the intent it was trained on, which is
-the only place the two probe-frugality profiles appear at all.
-
-It also prints first-50 vs last-50 episode means and the loss trend, which is
-what substantiates (or refutes) the claim that an agent converged.
-"""
+"""Training curves for the single-path agents (thesis appendix, app:extra)."""
 
 from __future__ import annotations
 
@@ -20,7 +10,7 @@ from typing import Dict
 
 import numpy as np
 
-from src.pipeline.chapter6_figures import (
+from src.pipeline.intent_cond_figures import (
     plot_per_profile_training_curves,
     plot_training_curves,
 )

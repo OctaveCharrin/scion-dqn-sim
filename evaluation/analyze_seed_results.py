@@ -1,25 +1,6 @@
 #!/usr/bin/env python3
-"""Aggregate the per-seed Chapter 4 studies and test whether the chapter's claims
+"""Aggregate the per-seed studies and test whether claims
 survive five training seeds.
-
-``run_seed_result_sweep.py`` produces ``seeds/seed<N>/shipped/{intent,zeroshot,
-pathcount,probing}/``; this reduces those to means with 95% confidence intervals
-over seeds, using the same interval as ``analyze_seed_variance.py`` so every
-seeded number in the chapter is computed one way.
-
-It also *checks the claims*, because several of them are quantitatively sharp and
-a mean alone does not say whether they hold: the intent-alignment diagonal must
-win all four columns, the zero-shot Spearman must be exactly -1.000 with no
-single step carrying more than 24.7% of the span, order invariance must be
-exactly 100%, the learned selector must beat every heuristic on three of four
-intents and stay within 0.0015 of lowest-latency on the fourth, and the ceiling
-must descend ~24% while reward stays flat. Each is evaluated per seed and
-reported as survives / fails with the spread it was tested against.
-
-Writes ``<run>/seeds/aggregate/`` (aggregate CSVs the figures read, plus
-``claims.json``) and prints a report.
-
-Usage: uv run python analyze_seed_results.py <run_dir>
 """
 
 from __future__ import annotations
@@ -34,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 
 from analyze_seed_variance import _ci95
-from src.pipeline.chapter6_eval import INTENT_LABELS, INTENT_PROFILES, METHOD_LABELS
+from src.pipeline.intent_cond_eval import INTENT_LABELS, INTENT_PROFILES, METHOD_LABELS
 from src.pipeline.run_dirs import resolve_run_dir
 
 SHIPPED_AGENT = "conditional_concat_2stream"
@@ -684,7 +665,7 @@ def build_claims(res: Dict[str, Any]) -> List[Dict[str, Any]]:
     )
     # "~24%" is an approximate claim; test it as "about a quarter" (the whole
     # interval in [20, 30]%) and report separately whether the two literal
-    # endpoints the chapter quotes still round to 9.1 and 6.9 Gbit/s.
+    # endpoints still round to 9.1 and 6.9 Gbit/s.
     endpoints_hold = (
         round(light["mean"] / 1000, 1) == 9.1 and round(heavy["mean"] / 1000, 1) == 6.9
     )

@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
 """Build a genuinely held-out source--destination pair set.
-
-The Chapter 6 evaluation uses ``pair_pool[:32]``, which shares a single source AS
-and overlaps the pairs training visited, so the train/test split is temporal
-only. Training does *not* restrict itself to a pair prefix, though:
-``train_*`` draws each episode's pair with ``random.Random(pair_rng_seed).choice(
-pair_pool)`` over the whole pool (``src/rl/path_selection_train.py``), and
-``DQN_TRAIN_PAIR_CAP`` only sizes the episode budget. Replaying that RNG for the
-episode counts actually trained therefore recovers the exact set of pairs the
-agents ever saw, and everything else is genuinely unseen.
-
-Writes ``heldout_pairs.json`` with a ``pairs`` list, spread across source ASes.
 """
 
 from __future__ import annotations

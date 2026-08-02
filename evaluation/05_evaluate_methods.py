@@ -156,7 +156,7 @@ if _cond_ckpt:
 
 # Deterministic greedy evaluation. EnhancedDQNAgent.act does not toggle eval mode
 # itself, so without this the flat DQN is scored with dropout 0.1 live and is not
-# comparable to the Chapter 6 harness (which does call .eval()).
+# comparable to the intent conditioning harness (which does call .eval()).
 for _agent in (
     dqn_agent,
     simple_dqn_agent,

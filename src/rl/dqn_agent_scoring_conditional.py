@@ -158,7 +158,7 @@ class ValueOnlyConcatDuelingPathScoringDQN(nn.Module):
     path features, but never the weight vector. Because the selected path is
     ``argmax_i A(s, path_i)`` and the weights enter only through ``V(s)`` -- a
     scalar added identically to every path -- the intent cannot change which
-    path wins. This is the naive-concat ablation the chapter theorizes will fail
+    path wins. This is the naive-concat ablation the study theorizes will fail
     to adapt, in contrast with FiLM's per-path modulation.
     """
 

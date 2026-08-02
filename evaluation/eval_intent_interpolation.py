@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""Zero-shot generalization across intents (Chapter 4, sec:p1eval:zeroshot).
-
-Every intent reported in the chapter is one of the six profiles the conditional
-agents trained on, so the results establish only that one network can store six
-behaviors -- not that it learned a mapping over the intent space. This script
-presents *unseen* weight vectors at inference and asks whether behaviour moves
-correspondingly.
-
-It sweeps ``w(t) = (1-t)*w_a + t*w_b`` between two trained profiles that
-genuinely conflict (default: ``bandwidth_max`` -> ``delay_averse``, i.e. maximize
-throughput vs. minimize delay). ``t`` in [0, 1] interpolates; values outside that
-range extrapolate beyond both trained endpoints, which the design intent also
-claims. Only ``t = 0`` and ``t = 1`` are weight vectors the agent has ever seen.
-
-For each ``t`` we log the chosen path's latency, goodput, trust, loss and hop
-count, plus the reward earned under each endpoint objective. A monotone curve
-through the two endpoint behaviours supports the zero-shot claim; a step function
-at ``t ~ 0.5`` would show the network memorized discrete points.
-
-Writes ``intent_interpolation.csv`` (per-t, per-method aggregates),
-``intent_interpolation_summary.json`` and a figure.
+"""Zero-shot generalization across intents.
 """
 
 from __future__ import annotations
@@ -32,7 +12,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from src.pipeline.chapter6_eval import (
+from src.pipeline.intent_cond_eval import (
     MAX_EVAL_PAIRS,
     METHOD_LABELS,
     EVAL_HOURS,

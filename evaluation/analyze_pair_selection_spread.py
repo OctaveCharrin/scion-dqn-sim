@@ -1,22 +1,5 @@
 #!/usr/bin/env python3
-"""Does path choice actually matter in this environment? (Chapter 4, sec:p1design:env)
-
-The chapter asserts that prior work's environment lacked the fidelity to make
-path selection matter and that this one has it, without a number supporting
-either side. The statistic that settles it is the spread of achievable goodput
-across a pair's candidate paths *within a decision context* -- that is exactly
-the quantity a selector has to exploit. If the spread is wide and moves by the
-hour, path choice demonstrably matters; if it is narrow, every effect in the
-chapter is a small effect.
-
-This script also measures how far the different intents can possibly diverge,
-by checking how often the bandwidth-optimal, latency-optimal and loss-optimal
-paths in a context are the *same* path. That bounds what any conditioning
-mechanism could achieve here, and explains the observed intent behaviour without
-appealing to the mechanism.
-
-Writes ``pair_selection_spread.json`` and a per-context CSV sample.
-"""
+"""Does path choice actually matter in this environment?"""
 
 from __future__ import annotations
 
@@ -27,7 +10,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from src.pipeline.chapter6_eval import EVAL_HOURS, MAX_EVAL_PAIRS, _eval_pairs
+from src.pipeline.intent_cond_eval import EVAL_HOURS, MAX_EVAL_PAIRS, _eval_pairs
 from src.pipeline.run_dirs import resolve_run_dir
 from src.simulation.evaluation_env import RewardWeights
 from src.simulation.run_context import load_run_context, make_env

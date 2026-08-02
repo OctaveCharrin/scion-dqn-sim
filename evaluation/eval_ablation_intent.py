@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Intent-conditioning ablation across the agent ladder (Chapter 6, Table 6.1):
+"""Intent-conditioning ablation across the agent ladder:
 Flat DQN, unconditioned path-scoring DQN, Value-Concat, Two-Stream-Concat, FiLM,
 and a per-context reward oracle.
 
 Writes ``ablation_reward_matrix.csv``, ``ablation_behavioral_divergence.csv``,
 ``ablation_per_context_rewards.npz`` and ``table_6_1.tex`` into an output
-directory (default: ``<run>/chapter6_latest``).
+directory (default: ``<run>/intent_cond_latest``).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import argparse
 import json
 from pathlib import Path
 
-from src.pipeline.chapter6_eval import INTENT_PROFILES, MAX_EVAL_PAIRS, run_ablation
+from src.pipeline.intent_cond_eval import INTENT_PROFILES, MAX_EVAL_PAIRS, run_ablation
 from src.pipeline.run_dirs import resolve_run_dir
 
 
@@ -25,7 +25,7 @@ def main() -> None:
         "--out-dir",
         type=Path,
         default=None,
-        help="Artifact output dir (default: <run>/chapter6_latest).",
+        help="Artifact output dir (default: <run>/intent_cond_latest).",
     )
     parser.add_argument("--max-pairs", type=int, default=MAX_EVAL_PAIRS)
     parser.add_argument(
@@ -55,7 +55,7 @@ def main() -> None:
     args = parser.parse_args()
 
     run_path = Path(args.run_dir or resolve_run_dir())
-    out_dir = args.out_dir or (run_path / "chapter6_latest")
+    out_dir = args.out_dir or (run_path / "intent_cond_latest")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     pairs = None

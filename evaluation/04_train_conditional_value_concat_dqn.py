@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Train the naive value-only-concat conditional path-scoring DQN (ablation).
 
-This is the failure-mode baseline for the Chapter 6 conditioning study. The
+This is the failure-mode baseline for the conditioning study. The
 reward-weight (intent) vector is concatenated into the *value* stream only; the
 per-path advantage stream never sees the intent. Since the selected path is
 ``argmax_i A(s, path_i)`` and the intent can only shift ``V(s)`` uniformly, this

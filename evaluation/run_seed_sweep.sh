@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Seed variance for Chapter 4 (sec:p1eval:ablation and the per-result studies).
+# Seed variance study.
 #
-# Every number in the chapter would otherwise come from a single training seed,
+# Every number in the study would otherwise come from a single training seed,
 # with the reported spread taken across selections rather than across runs. This
 # retrains all four rungs of the ablation ladder under N seeds and re-runs the
 # ablation on each, so every row of the table can carry a confidence interval --
 # not just the conditional variants, whose gaps are the smallest but whose rows
-# are not the only ones the chapter leans on (the flat-vs-scoring goodput gap is
-# the chapter's first summary claim).
+# are not the only ones the study leans on (the flat-vs-scoring goodput gap is
+# the study's first summary claim).
 #
 # The four rungs are the ones the thesis reports: Flat DQN, the unconditioned
 # Scoring DQN, Value-Concat, and Two-Stream-Concat. FiLM was dropped from the
@@ -22,7 +22,7 @@
 # so the script can be re-run to fill in newly added agents without redoing the
 # trainings that are already on disk. Delete a checkpoint to force a retrain.
 #
-# The ablation is the only study run here. For the chapter's other five results
+# The ablation is the only study run here. For the study's other five results
 # (intent alignment, zero-shot interpolation, path-count scaling and order
 # invariance, probing overhead, and the congestion ceiling), run
 # ``run_seed_result_sweep.py`` and then ``analyze_seed_results.py`` against the

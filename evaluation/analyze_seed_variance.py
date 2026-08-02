@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
-"""Seed variance and paired significance for the conditioning ablation
-(Chapter 4, sec:p1eval:ablation).
-
-Two things the chapter's table cannot currently support:
-
-1. *Across-seed spread.* Every reported number comes from one training seed, and
-   the reported std is across selections within that run. This aggregates the
-   per-seed ablations produced by ``run_seed_sweep.sh`` into means with 95%
-   confidence intervals over seeds.
-
-2. *Paired significance.* ``run_ablation`` persists per-context reward arrays in
-   ``ablation_per_context_rewards.npz``, evaluated on identical contexts in
-   identical order, so a paired Wilcoxon signed-rank test between two methods on
-   the same intent is exact rather than approximate. With ~10752 shared contexts
-   the test settles the FiLM-vs-concat question properly.
-
-Writes ``seed_variance.json`` and ``significance.json``.
+"""Seed variance and paired significance for the conditioning ablation.
 """
 
 from __future__ import annotations

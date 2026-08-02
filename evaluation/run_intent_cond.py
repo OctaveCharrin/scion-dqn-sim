@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Chapter 6 orchestrator: run all intent-conditioning evaluations, write CSVs +
+"""Intent conditioning orchestrator: run all intent-conditioning evaluations, write CSVs +
 LaTeX table, and render figures into one timestamped artifact directory.
 
 Usage:
-    uv run python run_chapter6.py [run_dir] [--metric goodput|reward] [--max-pairs N]
+    uv run python run_intent_cond.py [run_dir] [--metric goodput|reward] [--max-pairs N]
 
-Creates ``<run_dir>/chapter6_<YYYYMMDD_HHMMSS>/`` containing:
+Creates ``<run_dir>/intent_cond_<YYYYMMDD_HHMMSS>/`` containing:
     ablation_reward_matrix.csv, ablation_behavioral_divergence.csv, table_6_1.tex
     intent_reward_matrix.csv, intent_selection_metrics.csv
     probing_quality.csv, ceiling_by_congestion.csv
@@ -25,13 +25,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from src.pipeline.chapter6_eval import (
+from src.pipeline.intent_cond_eval import (
     MAX_EVAL_PAIRS,
     run_ablation,
     run_intent_alignment,
     run_probing_ceiling,
 )
-from src.pipeline.chapter6_figures import generate_all_figures
+from src.pipeline.intent_cond_figures import generate_all_figures
 from src.pipeline.run_dirs import resolve_run_dir
 
 
@@ -53,10 +53,10 @@ def main() -> None:
     t0 = time.time()
     run_path = Path(args.run_dir or resolve_run_dir())
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = run_path / f"chapter6_{stamp}"
+    out_dir = run_path / f"intent_cond_{stamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
     # Convenience alias so the figures CLI can find the newest set.
-    print(f"\nChapter 6 pipeline on {run_path}")
+    print(f"\nIntent conditioning pipeline on {run_path}")
     print(f"  artifact dir: {out_dir}")
 
     summary = {
@@ -100,7 +100,7 @@ def main() -> None:
     for name, path in figs.items():
         print(f"  {name}: {path}")
 
-    with open(out_dir / "chapter6_summary.json", "w") as f:
+    with open(out_dir / "intent_cond_summary.json", "w") as f:
         json.dump(summary, f, indent=2)
 
     print(f"\nDone in {time.time() - t0:.1f}s. Artifacts in {out_dir}")
