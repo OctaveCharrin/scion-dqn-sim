@@ -28,7 +28,7 @@ from src.pipeline.intent_cond_eval import (
 from src.pipeline.run_dirs import resolve_run_dir
 from src.simulation.run_context import load_run_context
 
-# The conditioning variant the thesis ships (sec:p1eval:ablation, rung four).
+# The conditioning variant the study ships (sec:p1eval:ablation, rung four).
 SHIPPED_AGENT = "conditional_concat_2stream"
 # Checkpoints a seed's staging dir exposes: the four rungs of the ladder, and
 # deliberately not ``dqn_conditional_scoring_model.pth`` (FiLM, dropped).

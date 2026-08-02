@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Render the six figures with the across-seed spread and, optionally,
-install them into the thesis figure directory under their existing names.
+install them into the figure directory under their existing names.
 
 The single-run versions are produced by ``06b_generate_intent_cond_figures.py``;
 these read the aggregates from ``analyze_seed_results.py`` instead. Filenames are
-kept identical (``p1eval_*.png``) so the thesis picks them up with no edit to any
+kept identical (``p1eval_*.png``) so the study picks them up with no edit to any
 ``\\includegraphics``.
 
 Usage:
@@ -38,8 +38,8 @@ def main() -> None:
         "--copy-to",
         type=Path,
         default=None,
-        help="Also copy each rendered figure into this directory (the thesis "
-        "figures dir), overwriting the single-run version.",
+        help="Also copy each rendered figure into this directory," \
+        "overwriting the single-run version.",
     )
     args = parser.parse_args()
 

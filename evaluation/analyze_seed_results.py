@@ -640,8 +640,6 @@ def build_claims(res: Dict[str, Any]) -> List[Dict[str, Any]]:
             + ")",
         )
     )
-    # The thesis states a shortfall, so a *negative* shortfall (the learned
-    # selector ahead) also satisfies the claim -- but is worth naming as such.
     margin = lowlat["margin_learned_minus_best_heuristic"]
     gap, gap_hi = -margin["mean"], -margin["ci95_lo"]
     claims.append(

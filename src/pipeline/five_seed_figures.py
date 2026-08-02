@@ -636,7 +636,7 @@ def plot_ceiling_seeds(ceiling_csv: Path, out_path: Path) -> Path:
 
 
 # -------------------------------------------------------------- orchestration
-#: Aggregate CSV -> the filename the thesis includes. Keeping the thesis-side
+#: Aggregate CSV -> the filename the study includes. Keeping the thesis-side
 #: names means ``\includegraphics`` needs no edit when these replace the
 #: single-run versions.
 THESIS_FIGURES = {

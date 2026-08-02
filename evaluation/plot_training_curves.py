@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Training curves for the single-path agents (thesis appendix, app:extra)."""
+"""Training curves for the single-path agents."""
 
 from __future__ import annotations
 
@@ -72,8 +72,7 @@ def main() -> None:
         nargs="+",
         default=(),
         metavar="LABEL",
-        help="Legend labels to omit, e.g. 'Conditional-FiLM' for a variant the "
-        "thesis no longer reports.",
+        help="Legend labels to omit",
     )
     args = parser.parse_args()
 

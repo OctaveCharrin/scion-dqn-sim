@@ -9,11 +9,6 @@
 # are not the only ones the study leans on (the flat-vs-scoring goodput gap is
 # the study's first summary claim).
 #
-# The four rungs are the ones the thesis reports: Flat DQN, the unconditioned
-# Scoring DQN, Value-Concat, and Two-Stream-Concat. FiLM was dropped from the
-# thesis on 2026-07-26 -- it tied within seed noise at more parameters -- and is
-# deliberately not trained here, so no reported number can pick it up.
-#
 # Only torch/numpy/random are reseeded: the environment's pair, hour and profile
 # RNGs stay fixed, so every seed sees the identical stream of training contexts
 # and only the learning process varies.

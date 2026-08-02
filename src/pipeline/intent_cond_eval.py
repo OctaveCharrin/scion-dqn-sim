@@ -78,8 +78,7 @@ CONDITIONAL_CHECKPOINTS: Dict[str, str] = {
     "conditional_concat_2stream": "dqn_conditional_concat_model.pth",
 }
 # Which conditional variant the single-agent studies (intent alignment, probing,
-# ceiling) profile. Kept at the historical default so existing callers are
-# unaffected; pass agent_key/--agent to profile the variant the thesis ships.
+# ceiling) profile.
 DEFAULT_CONDITIONAL_AGENT = "conditional_film"
 FLAT_CHECKPOINT = "dqn_model.pth"
 # Unconditioned path-scoring agent: the architectural control that separates

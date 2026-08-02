@@ -151,8 +151,7 @@ five *training* seeds. Only torch/numpy/random are reseeded — the environment'
 pair, hour and profile streams stay fixed, so each seed sees the identical stream
 of training contexts and is graded on the same 10752 held-out decision contexts
 (32 pairs × 336 hours). Four rungs are seeded: Flat DQN, the unconditioned
-Scoring DQN, Value-Concat, and Two-Stream-Concat. FiLM was dropped from the
-thesis and is not trained or reported.
+Scoring DQN, Value-Concat, and Two-Stream-Concat.
 
 ```bash
 # 1. Retrain the ladder under seeds 1..5 and re-run the ablation on each.
@@ -166,7 +165,7 @@ uv run python run_seed_result_sweep.py run_YYYYMMDD_HHMMSS
 # 3. Aggregate to means with CIs and test whether each claim survives.
 uv run python analyze_seed_results.py run_YYYYMMDD_HHMMSS
 
-# 4. Redraw the six thesis figures with the spread shown, and install them.
+# 4. Redraw the six figures with the spread shown, and install them.
 uv run python plot_seed_figures.py run_YYYYMMDD_HHMMSS --copy-to ~/thesis-report/figures
 ```
 
